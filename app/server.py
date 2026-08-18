@@ -138,6 +138,10 @@ HL_LOCK=threading.Lock(); HL_CACHE={}; HL_NEXT_REQUEST_AT=0.0; HL_BLOCKED_UNTIL=
 # Every distinct userFillsByTime window is its own cache key, so an app left
 # running for days would accumulate them without bound.  Cap both caches.
 HL_CACHE_MAX=int(os.environ.get('HL_CACHE_MAX','2000')); DEX_CACHE_MAX=int(os.environ.get('DEX_CACHE_MAX','500'))
+# Per-address 30-day trade frequency. Long TTL: the underlying window is 30
+# days, so a few minutes of staleness is invisible, and the uncached path is
+# slow enough to time out a phone.
+HL_FREQUENCY_CACHE={}; HL_FREQUENCY_LOCK=threading.Lock(); HL_FREQUENCY_TTL=float(os.environ.get('HL_FREQUENCY_TTL','600')); HL_FREQUENCY_MAX=int(os.environ.get('HL_FREQUENCY_MAX','2000'))
 def evict_cache(cache,limit):
     """Drop the oldest quarter once the cap is passed. Caller holds the lock."""
     if len(cache)<=limit: return
@@ -704,6 +708,23 @@ class Handler(SimpleHTTPRequestHandler):
             if re.fullmatch(r'0x[a-f0-9]{40}',user) and user not in addresses: addresses.append(user)
         addresses=addresses[:8]; start=int(time.time()*1000)-30*24*60*60*1000
         def analyze(user):
+            # A 30-day aggregate does not change from one page refresh to the
+            # next, but each miss costs a throttled userFillsByTime call — eight
+            # of them took ~13 s, long enough for a phone on mobile data to give
+            # up on the request entirely.
+            cache_key=(coin,user)
+            with HL_FREQUENCY_LOCK:
+                hit=HL_FREQUENCY_CACHE.get(cache_key)
+                if hit and time.time()-hit['time']<HL_FREQUENCY_TTL: return hit['row']
+            row=self._frequency_row(user,coin,start)
+            if not row.get('error'):
+                with HL_FREQUENCY_LOCK:
+                    HL_FREQUENCY_CACHE[cache_key]={'time':time.time(),'row':row}
+                    evict_cache(HL_FREQUENCY_CACHE,HL_FREQUENCY_MAX)
+            return row
+        with ThreadPoolExecutor(max_workers=min(len(addresses),2) or 1) as pool: rows=list(pool.map(analyze,addresses))
+        self.send_json({'source':'hyperliquid','coin':coin,'period_days':30,'rows':rows})
+    def _frequency_row(self,user,coin,start):
             try:
                 rows=self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':start,'endTime':int(time.time()*1000)})
                 buys=sorted(int(x.get('time',0)) for x in rows if (coin=='ALL' or str(x.get('coin','')).upper()==coin) and x.get('side')=='B')
@@ -717,8 +738,6 @@ class Handler(SimpleHTTPRequestHandler):
                 else: label='реже 3 дней'
                 return {'address':user,'buy_count':len(buys),'active_days':days,'median_hours':median_gap,'label':label}
             except Exception as e:return {'address':user,'buy_count':0,'active_days':0,'median_hours':None,'label':'нет данных','error':str(e)}
-        with ThreadPoolExecutor(max_workers=min(len(addresses),2) or 1) as pool: rows=list(pool.map(analyze,addresses))
-        self.send_json({'source':'hyperliquid','coin':coin,'period_days':30,'rows':rows})
     def hyperliquid_trade_participants(self,query):
         coin=(query.get('coin',[''])[0] or '').upper(); trade_id=str(query.get('tradeId',[''])[0]); event_time=int(query.get('time',['0'])[0]); raw=query.get('addresses',[''])[0]
         if not coin or not trade_id or not event_time: raise ValueError('coin, tradeId and time are required')
