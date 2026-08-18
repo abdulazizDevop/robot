@@ -1,0 +1,35 @@
+# Run from the app/ directory:
+#   docker compose -f deploy/docker-compose.yml up -d --build
+services:
+  radar:
+    build:
+      # Context is app/ so the image can copy web/ and requirements.txt.
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: liquidation-radar:latest
+    container_name: liquidation-radar
+    restart: always
+    # Reads HOST/PORT/RADAR_PASSWORD/exchange keys from app/.env.
+    # .env stays on the server and is never copied into the image.
+    env_file: [../.env]
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4174
+      DATA_DIR: /app/data
+      REPORT_DIR: /app/reports
+    volumes:
+      - radar_data:/app/data
+      - radar_reports:/app/reports
+    # Published on the loopback only; nginx terminates TLS and proxies to it.
+    ports: ["127.0.0.1:4174:4174"]
+    # A runaway report must not take the whole VPS down with it.
+    mem_limit: 768m
+    cpus: 1.0
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  radar_data:
+  radar_reports:

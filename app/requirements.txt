@@ -1,0 +1,7 @@
+# The radar, the whale analysis and the whole dry-run path need nothing here:
+# server.py, trading.py and autotrade.py are Python standard library only.
+#
+# These two are required ONLY to sign Hyperliquid orders in testnet/live mode.
+# Bybit needs nothing extra — its requests are signed with hmac/hashlib.
+hyperliquid-python-sdk>=0.9.0
+eth-account>=0.11.0

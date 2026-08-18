@@ -1,0 +1,51 @@
+[Unit]
+Description=Liquidation Radar — whale follower and auto-trader
+After=network-online.target
+Wants=network-online.target
+# Rate-limit a crash loop. These two belong in [Unit]; systemd ignores them
+# under [Service].
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=radar
+Group=radar
+WorkingDirectory=/opt/liquidation-radar
+EnvironmentFile=/opt/liquidation-radar/.env
+ExecStart=/usr/bin/python3 /opt/liquidation-radar/server.py
+Restart=always
+RestartSec=5
+
+# Keep the app on the loopback and let nginx publish it.
+Environment=HOST=127.0.0.1
+Environment=PORT=4174
+Environment=DATA_DIR=/var/lib/liquidation-radar
+Environment=REPORT_DIR=/var/lib/liquidation-radar/reports
+Environment=WEB_DIR=/opt/liquidation-radar/web
+Environment=PYTHONUNBUFFERED=1
+
+# The process holds an exchange key: give it as little of the host as possible.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/liquidation-radar
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+
+# A stuck report must not take the box down; systemd restarts instead.
+MemoryMax=768M
+TasksMax=256
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=liquidation-radar
+
+[Install]
+WantedBy=multi-user.target

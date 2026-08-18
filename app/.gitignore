@@ -1,0 +1,11 @@
+.env
+*.sqlite3
+*.sqlite3-journal
+__pycache__/
+*.pyc
+reports/
+data/
+trading_settings.json
+hyperliquid_24h_deep_cache.json
+hyperliquid_account_cache.json
+hyperliquid_first_profit_cache.json
