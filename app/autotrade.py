@@ -285,6 +285,9 @@ STATE = {
     'started_at': 0,
     'target': None,
     'target_locked_at': 0,
+    # A target the operator pinned by hand is never rotated automatically.
+    'target_pinned': False,
+    'target_checked_at': 0,
     'last_poll_at': 0,
     'last_error': None,
     'phase': 'idle',
@@ -324,6 +327,14 @@ def snapshot():
     state['close_confirmations_required'] = int(settings.get('close_confirmations', 2))
     state['only_saved_addresses'] = bool(settings.get('only_saved_addresses'))
     state['saved_addresses'] = saved_addresses()
+    state['target_refresh_seconds'] = int(settings.get('target_refresh_seconds', 300))
+    try:
+        state['target_candidates'] = [
+            {'address': row.get('address'), 'total_pnl': row.get('total_pnl'),
+             'account_value': row.get('account_value'), 'source': row.get('source') or 'radar'}
+            for row in _candidates(settings)[:10]]
+    except Exception:  # noqa: BLE001 - status must never fail
+        state['target_candidates'] = []
     return state
 
 
@@ -349,6 +360,7 @@ def start(target=None):
         STATE.update({
             'running': True, 'started_at': int(time.time() * 1000), 'last_error': None,
             'phase': 'searching', 'target': address, 'target_locked_at': int(time.time() * 1000) if address else 0,
+            'target_pinned': bool(address),
         })
         STOP_EVENT.clear()
         if not WORKER or not WORKER.is_alive():
@@ -369,6 +381,7 @@ def set_target(address):
     with STATE_LOCK:
         STATE['target'] = resolved
         STATE['target_locked_at'] = int(time.time() * 1000) if resolved else 0
+        STATE['target_pinned'] = bool(resolved)
         STATE['phase'] = 'watching' if resolved else 'searching'
     return resolved
 
@@ -412,31 +425,69 @@ def saved_addresses():
         return []
 
 
-def _pick_target(settings=None):
-    """Choose the address to follow.
-
-    Normally that is whatever the radar ranks highest.  With
-    ``only_saved_addresses`` on, the choice is restricted to the operator's
-    watchlist: a saved address the radar has also confirmed wins, but a saved
-    address the radar has *not* confirmed is still used — the point of pinning a
-    list is to follow those wallets, not to re-apply the radar's own filters to
-    them.
-    """
-    settings = settings or trading.load_settings()
+def _candidates(settings):
+    """Every address eligible to be followed, strongest first."""
     rows = _hook('radar_rows')(100)
     usable = [row for row in rows if row.get('address')]
     usable.sort(key=lambda row: (row.get('total_pnl') or 0, row.get('account_value') or 0), reverse=True)
     if not settings.get('only_saved_addresses'):
-        return usable[0] if usable else None
+        return usable
     allowed = saved_addresses()
     if not allowed:
-        return None
-    for row in usable:
-        if str(row.get('address') or '').lower() in allowed:
-            return row
-    # Nothing on the watchlist is radar-confirmed right now; follow the list
-    # anyway, in the order the operator saved it.
-    return {'address': allowed[0], 'total_pnl': None, 'account_value': None, 'source': 'saved'}
+        return []
+    picked = [row for row in usable if str(row.get('address') or '').lower() in allowed]
+    known = {str(row.get('address') or '').lower() for row in picked}
+    # Watchlist entries the radar has not confirmed are still followed: pinning
+    # a list means following those wallets, not re-applying the radar's filters.
+    picked.extend({'address': address, 'total_pnl': None, 'account_value': None, 'source': 'saved'}
+                  for address in allowed if address not in known)
+    return picked
+
+
+def _pick_target(settings=None):
+    """Choose the address to follow."""
+    settings = settings or trading.load_settings()
+    rows = _candidates(settings)
+    return rows[0] if rows else None
+
+
+def _rotate_target(target, settings):
+    """Reconsider an auto-selected target, returning the address to follow.
+
+    The engine used to lock onto the first whale it found and never look again,
+    so the panel showed the same address indefinitely no matter how quiet that
+    wallet went or how much stronger a later candidate was.  A target the
+    operator pinned by hand is left alone.
+    """
+    with STATE_LOCK:
+        pinned = STATE.get('target_pinned')
+        locked_at = STATE.get('target_locked_at') or 0
+    if pinned:
+        return target
+    interval = int(settings.get('target_refresh_seconds', 300)) * 1000
+    if int(time.time() * 1000) - locked_at < interval:
+        return target
+    rows = _candidates(settings)
+    _set(target_checked_at=int(time.time() * 1000))
+    if not rows:
+        return target
+    best = rows[0]
+    current = next((row for row in rows if str(row.get('address') or '').lower() == str(target).lower()), None)
+    if str(best.get('address') or '').lower() == str(target).lower():
+        _set(target_locked_at=int(time.time() * 1000))
+        return target
+    if current is None:
+        reason = 'адрес больше не проходит фильтры радара'
+    else:
+        margin = 1 + float(settings.get('target_switch_margin_pct', 20.0)) / 100.0
+        if (best.get('total_pnl') or 0) <= (current.get('total_pnl') or 0) * margin:
+            # Close enough to keep: switching on noise would churn positions.
+            _set(target_locked_at=int(time.time() * 1000))
+            return target
+        reason = (f'найден сильнее: PnL {best.get("total_pnl")} против {current.get("total_pnl")}')
+    _record_decision(target, '-', '-', None, None, None, 'skipped', f'смена цели — {reason}')
+    _set(target=best['address'], target_locked_at=int(time.time() * 1000))
+    return best['address']
 
 
 def _tick(settings):
@@ -458,8 +509,10 @@ def _tick(settings):
         if not row:
             return
         target = row['address']
-        _set(target=target, target_locked_at=int(time.time() * 1000), phase='watching')
+        _set(target=target, target_locked_at=int(time.time() * 1000), phase='watching',
+             target_pinned=False)
     else:
+        target = _rotate_target(target, settings)
         _set(phase='watching')
     _follow(target, settings)
 

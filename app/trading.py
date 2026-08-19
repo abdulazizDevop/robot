@@ -62,6 +62,14 @@ DEFAULT_SETTINGS = {
     # When on, the follower ignores whatever the radar ranks highest and only
     # ever locks onto an address from the saved list.
     'only_saved_addresses': False,
+    # An auto-selected target is reconsidered on this interval.  Without it the
+    # engine stays on the first whale it ever locked onto, however quiet that
+    # wallet goes or however much better a later candidate is.  A target pinned
+    # by hand is never rotated.
+    'target_refresh_seconds': 300,
+    # A new candidate has to beat the current one by this much to take over, so
+    # near-equal wallets do not make the follower flap between them.
+    'target_switch_margin_pct': 20.0,
 }
 
 _SETTING_TYPES = {
@@ -89,6 +97,8 @@ _SETTING_TYPES = {
     'close_chase_attempts': ('int', 1, 10),
     'close_on_shrink_pct': ('float', 0.0, 100.0),
     'only_saved_addresses': ('bool',),
+    'target_refresh_seconds': ('int', 30, 86_400),
+    'target_switch_margin_pct': ('float', 0.0, 1000.0),
 }
 
 

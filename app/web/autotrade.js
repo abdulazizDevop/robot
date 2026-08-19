@@ -55,6 +55,8 @@
     <span id="atOnlySavedState" class="muted"></span>
   </div>
   <div id="atSavedList"></div>
+  <div class="toolbar"><span id="atTargetMode" class="muted"></span></div>
+  <div id="atCandidates"></div>
   <div id="atStats" class="wallet-stats"></div>
   <h4 style="margin:14px 0 6px;color:var(--muted);font-size:12px">Скопированные позиции и закрытие вместе с лидером</h4>
   <div class="toolbar">
@@ -80,6 +82,10 @@
     <label class="pair">Сумма ордера $ <input id="setOrderUsd" class="input" style="width:110px;min-width:110px" type="number" min="1" step="10"></label>
     <label class="pair">Смещение лимита % <input id="setOffset" class="input" style="width:110px;min-width:110px" type="number" min="-5" max="5" step="0.01"></label>
     <label class="pair">Опрос, сек <input id="setPoll" class="input" style="width:90px;min-width:90px" type="number" min="1" max="300" step="1"></label>
+  </div>
+  <div class="toolbar">
+    <label class="pair">Пересматривать цель, сек <input id="setTargetRefresh" class="input" style="width:100px;min-width:100px" type="number" min="30" max="86400" step="30"></label>
+    <label class="pair">Порог смены цели, % <input id="setTargetMargin" class="input" style="width:100px;min-width:100px" type="number" min="0" max="1000" step="5"></label>
   </div>
   <div class="toolbar">
     <label class="pair"><input id="setAutoClose" type="checkbox"> закрывать вместе с лидером</label>
@@ -193,6 +199,8 @@
     $('#setCloseOrderType').value = settings.close_order_type;
     $('#setCloseChaseSeconds').value = settings.close_chase_seconds;
     $('#setCloseChaseAttempts').value = settings.close_chase_attempts;
+    $('#setTargetRefresh').value = settings.target_refresh_seconds;
+    $('#setTargetMargin').value = settings.target_switch_margin_pct;
   }
 
   async function loadSettings() {
@@ -237,6 +245,8 @@
         close_order_type: $('#setCloseOrderType').value,
         close_chase_seconds: Number($('#setCloseChaseSeconds').value),
         close_chase_attempts: Number($('#setCloseChaseAttempts').value),
+        target_refresh_seconds: Number($('#setTargetRefresh').value),
+        target_switch_margin_pct: Number($('#setTargetMargin').value),
       }));
       fillSettings(data.settings);
       const venue = data.venue_status || {};
@@ -277,11 +287,42 @@
       const data = await api('/api/autotrade/status');
       renderStatus(data);
       renderSavedOnly(data);
+      renderCandidates(data);
       renderMirrors(data);
       refreshWhaleOrders(data.target);
     } catch (error) {
       $('#atPhase').textContent = 'Статус недоступен: ' + error.message;
     }
+  }
+
+  function renderCandidates(data) {
+    const label = $('#atTargetMode');
+    const box = $('#atCandidates');
+    if (!label || !box) return;
+    const target = String(data.target || '').toLowerCase();
+    const rows = data.target_candidates || [];
+    if (data.target_pinned) {
+      label.textContent = 'Цель закреплена вручную — автоматическая смена отключена. «Авто-выбор» вернёт ротацию.';
+      label.className = 'muted yellow';
+    } else {
+      label.textContent = `Автовыбор: цель пересматривается каждые ${data.target_refresh_seconds || 300} с, `
+        + 'смена — только если кандидат заметно сильнее.';
+      label.className = 'muted';
+    }
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">Радар пока не подтвердил ни одного адреса.</div>';
+      return;
+    }
+    box.innerHTML = `<table><thead><tr><th>Кандидат</th><th>PnL 24ч</th><th>Счёт</th><th>Источник</th><th></th></tr></thead><tbody>${rows.map((row) => {
+      const current = String(row.address || '').toLowerCase() === target;
+      return `<tr>
+        <td class="mono">${esc(row.address)}</td>
+        <td class="${Number(row.total_pnl) >= 0 ? 'green' : 'red'}">${row.total_pnl == null ? '—' : money(row.total_pnl)}</td>
+        <td>${row.account_value == null ? '—' : money(row.account_value)}</td>
+        <td>${row.source === 'saved' ? 'сохранён' : 'радар'}</td>
+        <td class="${current ? 'green' : ''}">${current ? 'слежу сейчас' : ''}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
   }
 
   function renderSavedOnly(data) {
