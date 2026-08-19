@@ -322,6 +322,8 @@ def snapshot():
         'leader_position_value': (leader.get((row['coin'], row['side'])) or {}).get('position_value'),
     } for row in rows]
     state['close_confirmations_required'] = int(settings.get('close_confirmations', 2))
+    state['only_saved_addresses'] = bool(settings.get('only_saved_addresses'))
+    state['saved_addresses'] = saved_addresses()
     return state
 
 
@@ -358,6 +360,12 @@ def start(target=None):
 def set_target(address):
     """Pin the follower to one address, or clear it to resume auto-selection."""
     resolved = _validate_address(address) if address else None
+    if resolved and trading.load_settings().get('only_saved_addresses'):
+        allowed = saved_addresses()
+        if allowed and resolved.lower() not in allowed:
+            raise TradingError(
+                'Включён режим «только сохранённые адреса»: сначала добавьте '
+                f'{resolved} в список или выключите режим')
     with STATE_LOCK:
         STATE['target'] = resolved
         STATE['target_locked_at'] = int(time.time() * 1000) if resolved else 0
@@ -396,22 +404,57 @@ def _worker():
             return
 
 
-def _pick_target():
-    """Choose the strongest address the radar has confirmed so far."""
+def saved_addresses():
+    """The operator's own watchlist, lowercased."""
+    try:
+        return [str(a).strip().lower() for a in _hook('saved_addresses')() if a]
+    except Exception:  # noqa: BLE001 - an unreadable list must not stop the engine
+        return []
+
+
+def _pick_target(settings=None):
+    """Choose the address to follow.
+
+    Normally that is whatever the radar ranks highest.  With
+    ``only_saved_addresses`` on, the choice is restricted to the operator's
+    watchlist: a saved address the radar has also confirmed wins, but a saved
+    address the radar has *not* confirmed is still used — the point of pinning a
+    list is to follow those wallets, not to re-apply the radar's own filters to
+    them.
+    """
+    settings = settings or trading.load_settings()
     rows = _hook('radar_rows')(100)
     usable = [row for row in rows if row.get('address')]
-    if not usable:
-        return None
     usable.sort(key=lambda row: (row.get('total_pnl') or 0, row.get('account_value') or 0), reverse=True)
-    return usable[0]
+    if not settings.get('only_saved_addresses'):
+        return usable[0] if usable else None
+    allowed = saved_addresses()
+    if not allowed:
+        return None
+    for row in usable:
+        if str(row.get('address') or '').lower() in allowed:
+            return row
+    # Nothing on the watchlist is radar-confirmed right now; follow the list
+    # anyway, in the order the operator saved it.
+    return {'address': allowed[0], 'total_pnl': None, 'account_value': None, 'source': 'saved'}
 
 
 def _tick(settings):
     with STATE_LOCK:
         target = STATE['target']
+    if target and settings.get('only_saved_addresses'):
+        # Turning the watchlist on mid-run must drop a target that is not on it,
+        # otherwise "buys only from these addresses" would not hold until the
+        # next restart.
+        allowed = saved_addresses()
+        if allowed and str(target).lower() not in allowed:
+            _record_decision(target, '-', '-', None, None, None, 'skipped',
+                             'адрес вне сохранённого списка — слежение снято')
+            target = None
+            _set(target=None, target_locked_at=0)
     if not target:
         _set(phase='searching')
-        row = _pick_target()
+        row = _pick_target(settings)
         if not row:
             return
         target = row['address']

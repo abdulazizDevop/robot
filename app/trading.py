@@ -59,6 +59,9 @@ DEFAULT_SETTINGS = {
     'close_chase_seconds': 8,      # how long an unfilled close order may rest
     'close_chase_attempts': 3,     # re-posts before falling back to market
     'close_on_shrink_pct': 0.0,    # >0: also close when the whale cuts size by this %
+    # When on, the follower ignores whatever the radar ranks highest and only
+    # ever locks onto an address from the saved list.
+    'only_saved_addresses': False,
 }
 
 _SETTING_TYPES = {
@@ -85,6 +88,7 @@ _SETTING_TYPES = {
     'close_chase_seconds': ('int', 1, 120),
     'close_chase_attempts': ('int', 1, 10),
     'close_on_shrink_pct': ('float', 0.0, 100.0),
+    'only_saved_addresses': ('bool',),
 }
 
 

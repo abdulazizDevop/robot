@@ -544,15 +544,16 @@ class Handler(SimpleHTTPRequestHandler):
             key=(item.get('coin'),item.get('trade_id'),item.get('time'),item.get('tx_hash'))
             if key in seen: continue
             seen.add(key); local_rows.append({'coin':item.get('coin',coin),'side':'A' if item.get('side')=='SELL' else 'B','px':item.get('price',0),'sz':item.get('size',0),'time':item.get('time'),'hash':item.get('tx_hash'),'tid':item.get('trade_id'),'users':item.get('participants',[])})
-        # Real rows already captured by the app are immediately usable. This
-        # prevents a temporary TLS failure from blocking the overview screen.
-        if local_rows:
+        # Live first.  Stored rows exist only so a failed request does not blank
+        # the screen — preferring them made the fallback the primary path, so
+        # once anything was cached the panel never refreshed again and showed
+        # whichever coin happened to be fetched first.
+        try:
+            rows,market_info=self.recent_market_trades(coin,limit)
+        except Exception:
+            rows=[]; market_info={'markets_total':0,'markets_refreshed':0,'markets_cached':0,'fallback':'unavailable'}
+        if not rows and local_rows:
             used_local_cache=True; rows=sorted(local_rows,key=lambda row:row.get('time',0),reverse=True)[:limit]; market_info={'markets_total':0,'markets_refreshed':0,'markets_cached':len(rows),'fallback':'local_cache'}
-        else:
-            try:
-                rows,market_info=self.recent_market_trades(coin,limit)
-            except Exception:
-                rows=[]; market_info={'markets_total':0,'markets_refreshed':0,'markets_cached':0,'fallback':'unavailable'}
         normalized=[{'source':'hyperliquid','kind':'market_trade','coin':x.get('coin',coin),'side':'SELL' if x.get('side')=='A' else 'BUY','price':float(x.get('px',0)),'size':float(x.get('sz',0)),'usd':float(x.get('px',0))*float(x.get('sz',0)),'time':x.get('time'),'tx_hash':x.get('hash'),'trade_id':x.get('tid'),'participants':x.get('users',[])} for x in rows]
         append_rows('hyperliquid',normalized)
         self.send_json({'source':'hyperliquid','coin':coin,'trades':normalized,'count':len(normalized),'market_info':market_info,'cached':used_local_cache,'warning':'Показан последний локально сохранённый поток; повторите обновление позже.' if used_local_cache else None})
@@ -1453,6 +1454,7 @@ def wire_autotrade():
         radar_rows=radar_rows,
         radar_start=lambda item: radar_start_state(item,helper.hyperliquid_radar_worker),
         radar_stop=radar_stop_state,
+        saved_addresses=load_saved_addresses,
     )
 if __name__=='__main__':
     port=int(os.environ.get('PORT','4174'))

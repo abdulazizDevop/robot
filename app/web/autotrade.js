@@ -50,6 +50,11 @@
     <button class="pair" id="atSetTarget">Закрепить</button>
     <button class="pair" id="atClearTarget">Авто-выбор</button>
   </div>
+  <div class="toolbar" style="border-top:1px solid var(--line);padding-top:10px;margin-top:4px">
+    <label class="pair"><input id="atOnlySaved" type="checkbox"> торговать только по сохранённым адресам</label>
+    <span id="atOnlySavedState" class="muted"></span>
+  </div>
+  <div id="atSavedList"></div>
   <div id="atStats" class="wallet-stats"></div>
   <h4 style="margin:14px 0 6px;color:var(--muted);font-size:12px">Скопированные позиции и закрытие вместе с лидером</h4>
   <div class="toolbar">
@@ -271,10 +276,52 @@
     try {
       const data = await api('/api/autotrade/status');
       renderStatus(data);
+      renderSavedOnly(data);
       renderMirrors(data);
       refreshWhaleOrders(data.target);
     } catch (error) {
       $('#atPhase').textContent = 'Статус недоступен: ' + error.message;
+    }
+  }
+
+  function renderSavedOnly(data) {
+    const toggle = $('#atOnlySaved');
+    const label = $('#atOnlySavedState');
+    const list = $('#atSavedList');
+    if (!toggle || !label || !list) return;
+    const on = !!data.only_saved_addresses;
+    const saved = data.saved_addresses || [];
+    if (document.activeElement !== toggle) toggle.checked = on;
+    const target = String(data.target || '').toLowerCase();
+
+    if (!on) {
+      label.textContent = 'Выключено — цель выбирает радар из всех найденных адресов.';
+      label.className = 'muted';
+      list.innerHTML = '';
+      return;
+    }
+    if (!saved.length) {
+      label.textContent = 'Включено, но список пуст — сохраните адреса, иначе движок не найдёт цель.';
+      label.className = 'muted yellow';
+      list.innerHTML = '';
+      return;
+    }
+    label.textContent = `Включено · адресов в списке: ${saved.length} · вход только по ним`;
+    label.className = 'muted green';
+    list.innerHTML = `<table><thead><tr><th>Сохранённый адрес</th><th>Статус</th></tr></thead><tbody>${saved.map((address) => `<tr>
+      <td class="mono">${esc(address)}</td>
+      <td class="${address.toLowerCase() === target ? 'green' : ''}">${address.toLowerCase() === target ? 'слежу сейчас' : 'в очереди'}</td>
+    </tr>`).join('')}</tbody></table>`;
+  }
+
+  async function toggleSavedOnly(event) {
+    const on = event.target.checked;
+    try {
+      await api('/api/autotrade/settings', jsonPost({ only_saved_addresses: on }));
+      refreshStatus();
+    } catch (error) {
+      event.target.checked = !on;
+      window.alert('Не удалось переключить: ' + error.message);
     }
   }
 
@@ -556,6 +603,7 @@
     $('#manAnalyze').onclick = manualAnalyze;
     $('#atRefreshLog').onclick = refreshLog;
     $('#atCloseAll').onclick = closeAll;
+    $('#atOnlySaved').onchange = toggleSavedOnly;
     loadSettings().then(refreshStatus).then(refreshLog);
     state.timer = setInterval(() => {
       if ($('#autoTrade').classList.contains('active')) { refreshStatus(); refreshLog(); }
