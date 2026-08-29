@@ -356,6 +356,7 @@ class BybitBroker(Broker):
     def __init__(self, mode):
         super().__init__(mode)
         self._instrument_cache = {}
+        self._hedge_cache = {}
         self._instrument_lock = threading.Lock()
 
     # -- plumbing -------------------------------------------------
@@ -520,6 +521,45 @@ class BybitBroker(Broker):
             'category': 'linear', 'symbol': self.symbol_for(coin), 'orderId': str(order_id)})
         return {'ok': True}
 
+    def hedge_mode(self, coin):
+        """True when the account keeps long and short legs separately.
+
+        Bybit rejects an order whose positionIdx does not match the account's
+        position mode, so this cannot be assumed: a one-way account needs 0 (or
+        the field omitted) and a hedge account needs 1/2.  The mode is a per
+        symbol account setting that rarely changes, so it is cached.
+        """
+        symbol = self.symbol_for(coin)
+        with self._instrument_lock:
+            cached = self._hedge_cache.get(symbol)
+            if cached and time.time() - cached['time'] < 3600:
+                return cached['hedge']
+        try:
+            result = self._signed('GET', '/v5/position/list',
+                                  {'category': 'linear', 'symbol': symbol})
+        except TradingError:
+            return None  # unknown: send no positionIdx rather than a wrong one
+        indexes = {str(row.get('positionIdx')) for row in (result.get('list') or [])}
+        hedge = bool(indexes - {'0'})
+        with self._instrument_lock:
+            self._hedge_cache[symbol] = {'time': time.time(), 'hedge': hedge}
+        return hedge
+
+    def position_index(self, coin, side, reduce_only):
+        """positionIdx for this order, or None when the field must be omitted.
+
+        In hedge mode the index identifies the *leg*, not the order side, so a
+        close carries the index of the position it reduces: selling to close a
+        long is still index 1.
+        """
+        if self.dry_run:
+            return None
+        hedge = self.hedge_mode(coin)
+        if not hedge:
+            return None
+        long_leg = (side == 'BUY') != bool(reduce_only)
+        return 1 if long_leg else 2
+
     def set_leverage(self, coin, leverage):
         if self.dry_run:
             return
@@ -561,6 +601,9 @@ class BybitBroker(Broker):
             body['timeInForce'] = 'GTC'
         if reduce_only:
             body['reduceOnly'] = True
+        index = self.position_index(coin, side, reduce_only)
+        if index is not None:
+            body['positionIdx'] = index
         payload = _order_payload(self.name, instrument['symbol'], coin, side, qty, limit_price,
                                  usd, order_type, leverage)
         if self.dry_run:

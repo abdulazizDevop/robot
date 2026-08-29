@@ -134,6 +134,14 @@ def bybit_status_payload():
     return payload
 # Hyperliquid applies a shared rate limit to this IP.  Keep all routes behind one
 # small queue and reuse short-lived real responses instead of issuing duplicate calls.
+# Bybit leader-copy panel (Hyperliquid обзор). Its own $10-capped, confirm-gated
+# path, kept separate from the autotrade engine in autotrade.py.
+COPY_FOLLOW_PATH=os.path.join(DATA_DIR,'bybit_copy_follow.json'); COPY_FOLLOW_LOCK=threading.Lock(); COPY_FOLLOW_THREAD=None; COPY_FOLLOW_STOP=threading.Event()
+BYBIT_COPY_MAX_USD=float(os.environ.get('BYBIT_COPY_MAX_USD','10')); BYBIT_RECV_WINDOW='60000'
+# Bybit rejects a signed request whose timestamp falls outside recv_window, so
+# the offset to their clock is refreshed instead of trusting the local one.
+BYBIT_TIME_LOCK=threading.Lock(); BYBIT_TIME_OFFSET=0; BYBIT_TIME_CHECKED_AT=0.0
+
 HL_LOCK=threading.Lock(); HL_CACHE={}; HL_NEXT_REQUEST_AT=0.0; HL_BLOCKED_UNTIL=0.0; HL_ALL_MARKET_CURSOR=0; HL_REQUEST_INTERVAL=1.0
 # Every distinct userFillsByTime window is its own cache key, so an app left
 # running for days would accumulate them without bound.  Cap both caches.
@@ -256,6 +264,67 @@ def radar_start_state(item,worker):
 def radar_stop_state():
     with RADAR_LOCK: RADAR_STATE['running']=False; RADAR_STATE['scanning']=False
     RADAR_STOP.set()
+def bybit_base_url():
+    return 'https://api-testnet.bybit.com' if bybit_config()['testnet'] else 'https://api.bybit.com'
+
+
+def bybit_timestamp():
+    global BYBIT_TIME_OFFSET, BYBIT_TIME_CHECKED_AT
+    now=time.time()
+    with BYBIT_TIME_LOCK:
+        if now-BYBIT_TIME_CHECKED_AT>30:
+            try:
+                request=urllib.request.Request(bybit_base_url()+'/v5/market/time',headers={'User-Agent':'LiquidationRadar/1.0','Accept':'application/json'})
+                with urllib.request.urlopen(request,timeout=8) as response: result=json.loads(response.read())
+                server_ms=int((result.get('result') or {}).get('timeNano','0'))//1000000
+                if server_ms: BYBIT_TIME_OFFSET=server_ms-int(now*1000); BYBIT_TIME_CHECKED_AT=now
+            except Exception: pass
+        return str(int(time.time()*1000)+BYBIT_TIME_OFFSET)
+
+
+def decimal_floor(value,step):
+    if step<=0:return value
+    return int(value/step+1e-10)*step
+
+
+def bybit_public_request(path,params):
+    url=bybit_base_url()+path+'?'+urllib.parse.urlencode(params)
+    request=urllib.request.Request(url,headers={'User-Agent':'LiquidationRadar/1.0','Accept':'application/json'})
+    with urllib.request.urlopen(request,timeout=15) as response: result=json.loads(response.read())
+    if result.get('retCode') != 0: raise ValueError('Bybit: '+str(result.get('retMsg') or result.get('retCode')))
+    return result.get('result') or {}
+
+
+def bybit_private_request(method,path,params=None,body=None):
+    config=bybit_config()
+    if not config['api_key'] or not config['api_secret']: raise ValueError('Bybit API-ключ не задан')
+    timestamp=bybit_timestamp(); recv_window=BYBIT_RECV_WINDOW
+    if method=='GET':
+        payload=urllib.parse.urlencode(sorted((params or {}).items()))
+        url=bybit_base_url()+path+('?' + payload if payload else '')
+        data=None
+    else:
+        payload=json.dumps(body or {},separators=(',',':'))
+        url=bybit_base_url()+path; data=payload.encode('utf-8')
+    sign=hmac.new(config['api_secret'].encode('utf-8'),(timestamp+config['api_key']+recv_window+payload).encode('utf-8'),hashlib.sha256).hexdigest()
+    request=urllib.request.Request(url,data=data,method=method,headers={'User-Agent':'LiquidationRadar/1.0','Accept':'application/json','Content-Type':'application/json','X-BAPI-API-KEY':config['api_key'],'X-BAPI-TIMESTAMP':timestamp,'X-BAPI-RECV-WINDOW':recv_window,'X-BAPI-SIGN':sign})
+    with urllib.request.urlopen(request,timeout=15) as response: result=json.loads(response.read())
+    if result.get('retCode') != 0: raise ValueError('Bybit: '+str(result.get('retMsg') or result.get('retCode')))
+    return result.get('result') or {}
+
+
+def load_copy_follow_state():
+    try:
+        with open(COPY_FOLLOW_PATH,encoding='utf-8') as handle: return json.load(handle)
+    except (OSError,ValueError,TypeError): return {'active':False}
+
+
+def save_copy_follow_state(state):
+    temporary=COPY_FOLLOW_PATH+'.tmp'
+    with open(temporary,'w',encoding='utf-8') as handle: json.dump(state,handle,ensure_ascii=False,indent=2)
+    os.replace(temporary,COPY_FOLLOW_PATH)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def authorized(self):
         if not AUTH_PASSWORD: return True
@@ -308,6 +377,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if u.path=='/api/hyperliquid/account': return self.hyperliquid_account(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/frequency': return self.hyperliquid_frequency(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/trade-participants': return self.hyperliquid_trade_participants(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/bybit/orderbook': return self.bybit_orderbook(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/bybit/copy-status': return self.bybit_copy_status(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/bybit/copy-follow-status': return self.send_json(load_copy_follow_state())
+                if u.path=='/api/hyperliquid/copy-leader': return self.hyperliquid_copy_leader(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/hyperliquid/saved-leader-summary': return self.hyperliquid_saved_leader_summary()
+                if u.path=='/api/hyperliquid/open-pnl-leaders': return self.hyperliquid_open_pnl_leaders(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/hyperliquid/notifications': return self.hyperliquid_notifications(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/hyperliquid/token-leaders': return self.hyperliquid_token_leaders(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/icebergs': return self.hyperliquid_icebergs(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/auto-wallets': return self.hyperliquid_auto_wallets(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/book': return self.hyperliquid_book(urllib.parse.parse_qs(u.query))
@@ -366,6 +443,13 @@ class Handler(SimpleHTTPRequestHandler):
                 n=int(self.headers.get('Content-Length',0)); return self.hyperliquid_radar_start(json.loads(self.rfile.read(n) or b'{}'))
             except Exception as e:return self.send_json({'error':str(e)},400)
         if self.path=='/api/hyperliquid/radar/stop': return self.hyperliquid_radar_stop()
+        if self.path in ('/api/bybit/copy-order','/api/bybit/copy-close','/api/bybit/copy-follow'):
+            try:
+                n=int(self.headers.get('Content-Length',0)); item=json.loads(self.rfile.read(n) or b'{}')
+            except (ValueError,TypeError): return self.send_json({'error':'Некорректный JSON'},400)
+            if self.path=='/api/bybit/copy-order': return self.bybit_copy_order(item)
+            if self.path=='/api/bybit/copy-close': return self.bybit_copy_close(item)
+            return self.bybit_copy_follow(item)
         if self.path.startswith('/api/autotrade/'): return self.autotrade_post(self.path)
         if self.path!='/api/events':return self.send_json({'error':'unknown endpoint'},404)
         try:
@@ -378,7 +462,7 @@ class Handler(SimpleHTTPRequestHandler):
         now=time.time()
         with DEX_LOCK:
             cached=DEX_CACHE.get(url)
-            if cached and now-cached['time']<ttl:return cached['data']
+            if allow_cache and cached and now-cached['time']<ttl:return cached['data']
         request=urllib.request.Request(url,headers={'User-Agent':'LiquidationRadar/1.0','Accept':'application/json'})
         with urllib.request.urlopen(request,timeout=12) as response:data=json.loads(response.read())
         with DEX_LOCK: DEX_CACHE[url]={'time':now,'data':data};evict_cache(DEX_CACHE,DEX_CACHE_MAX)
@@ -453,7 +537,7 @@ class Handler(SimpleHTTPRequestHandler):
         if request_type=='clearinghouseState': return 8
         if request_type=='userFillsByTime': return 30
         return 5
-    def hyperliquid_request(self,body):
+    def hyperliquid_request(self,body,allow_cache=True):
         global HL_NEXT_REQUEST_AT, HL_BLOCKED_UNTIL
         key=json.dumps(body,sort_keys=True,separators=(',',':')); ttl=self.hyperliquid_cache_ttl(body); now=time.time()
         with HL_LOCK:
@@ -502,9 +586,20 @@ class Handler(SimpleHTTPRequestHandler):
                 cached=HL_CACHE.get(json.dumps({'type':'recentTrades','coin':coin},sort_keys=True,separators=(',',':')))
                 if cached and now-cached['time']<=max_age:rows.extend(cached['data'])
         return rows
-    def recent_market_trades(self,coin,limit):
+    def recent_market_trades(self,coin,limit,force_fresh=False):
         global HL_ALL_MARKET_CURSOR, HL_MARKETS
-        if coin!='ALL':return self.hyperliquid_request({'type':'recentTrades','coin':coin})[:limit],{'markets_total':1,'markets_refreshed':1,'markets_cached':1}
+        if coin!='ALL':
+            # force_fresh drops the cached copy first: the copy-leader panel has
+            # to act on the current book, not a response from a few seconds ago.
+            if force_fresh:
+                with HL_LOCK: HL_CACHE.pop(json.dumps({'type':'recentTrades','coin':coin},sort_keys=True,separators=(',',':')),None)
+            return self.hyperliquid_request({'type':'recentTrades','coin':coin},allow_cache=not force_fresh)[:limit],{'markets_total':1,'markets_refreshed':1,'markets_cached':0}
+        if force_fresh:
+            with HL_LOCK:
+                for key in list(HL_CACHE):
+                    try:
+                        if json.loads(key).get('type')=='recentTrades': HL_CACHE.pop(key,None)
+                    except Exception: pass
         try:
             meta=self.hyperliquid_request({'type':'meta'}); coins=[x.get('name') for x in meta.get('universe',[]) if x.get('name')]
             if coins:
@@ -1440,6 +1535,344 @@ class Handler(SimpleHTTPRequestHandler):
         if download:self.send_header('Content-Disposition',f'attachment; filename="{name}"')
         self.end_headers();self.wfile.write(b)
     def log_message(self,*args):pass
+
+    def copy_follow_worker(self):
+        while not COPY_FOLLOW_STOP.wait(15):
+            with COPY_FOLLOW_LOCK: state=load_copy_follow_state()
+            if not state.get('active'): return
+            try:
+                raw=self.hyperliquid_request({'type':'clearinghouseState','user':state['leader']},allow_cache=False)
+                leader_open=False
+                current_leader_positions=[]
+                for item in raw.get('assetPositions',[]):
+                    position=item.get('position',{}); size=float(position.get('szi',0) or 0)
+                    if size: current_leader_positions.append({'coin':str(position.get('coin','')).upper(),'side':'Buy' if size>0 else 'Sell','size':abs(size),'position_value':float(position.get('positionValue',0) or 0)})
+                    if str(position.get('coin','')).upper()==state['coin'] and size and (('Buy' if size>0 else 'Sell')==state['side']): leader_open=True
+                state['last_checked_at']=int(time.time()*1000); state['last_error']=None
+                if leader_open: state['missing_checks']=0
+                else: state['missing_checks']=int(state.get('missing_checks') or 0)+1
+                has_snapshot='leader_positions_seen' in state
+                seen=set(state.get('leader_positions_seen') or [])
+                new_positions=[] if not has_snapshot else [p for p in current_leader_positions if p['coin'] not in seen]
+                if new_positions:
+                    state['new_positions_signal']=new_positions
+                state['leader_positions_seen']=[p['coin'] for p in current_leader_positions]
+                if state['missing_checks']>=2:
+                    next_position = None
+                    for item in raw.get('assetPositions',[]):
+                        candidate = item.get('position',{})
+                        candidate_size = float(candidate.get('szi',0) or 0)
+                        candidate_coin = str(candidate.get('coin','')).upper()
+                        if candidate_size and candidate_coin != state['coin']:
+                            next_position = {'coin': candidate_coin, 'side': 'Buy' if candidate_size > 0 else 'Sell', 'size': abs(candidate_size), 'entry_price': float(candidate.get('entryPx',0) or 0), 'position_value': float(candidate.get('positionValue',0) or 0), 'unrealized_pnl': float(candidate.get('unrealizedPnl',0) or 0)}
+                            break
+                    positions=[position for position in self.bybit_copy_positions() if position['symbol']==state['symbol']]
+                    orders=[order for order in self.bybit_copy_open_orders() if order['symbol']==state['symbol'] and not order['reduce_only']]
+                    if positions:
+                        state.update({'active':False,'action':'leader_closed_waiting_for_user','closed_at':int(time.time()*1000),'leader_closed_signal':True})
+                    elif orders:
+                        for order in orders: bybit_private_request('POST','/v5/order/cancel',body={'category':'linear','symbol':state['symbol'],'orderId':order['order_id']})
+                        state.update({'active':False,'action':'entry_order_cancelled','closed_at':int(time.time()*1000)})
+                    else: state.update({'active':False,'action':'nothing_to_close','closed_at':int(time.time()*1000)})
+                    if next_position:
+                        state['next_position'] = next_position
+                        state['signal'] = 'leader_switched_coin'
+                with COPY_FOLLOW_LOCK: save_copy_follow_state(state)
+                if not state.get('active'): return
+            except Exception as error:
+                state['last_checked_at']=int(time.time()*1000); state['last_error']=str(error)
+                with COPY_FOLLOW_LOCK: save_copy_follow_state(state)
+
+    def bybit_copy_positions(self):
+        rows=bybit_private_request('GET','/v5/position/list',{'category':'linear','settleCoin':'USDT'}).get('list') or []
+        result=[]
+        for row in rows:
+            try:
+                size=abs(float(row.get('size') or 0))
+                if size: result.append({'symbol':row.get('symbol'),'side':row.get('side'),'position_idx':int(row.get('positionIdx') or 0),'size':size,'avg_price':float(row.get('avgPrice') or 0),'mark_price':float(row.get('markPrice') or 0),'unrealized_pnl':float(row.get('unrealisedPnl') or 0),'position_value':float(row.get('positionValue') or 0)})
+            except (TypeError,ValueError): pass
+        return result
+
+    def bybit_copy_open_orders(self):
+        rows=bybit_private_request('GET','/v5/order/realtime',{'category':'linear','settleCoin':'USDT','openOnly':'0'}).get('list') or []
+        return [{'symbol':row.get('symbol'),'side':row.get('side'),'qty':float(row.get('qty') or 0),'price':float(row.get('price') or 0),'order_id':row.get('orderId'),'reduce_only':bool(row.get('reduceOnly'))} for row in rows if row.get('orderStatus') in ('New','PartiallyFilled','Untriggered')]
+
+    def bybit_linear_instrument(self,symbol):
+        if not re.fullmatch(r'[A-Z0-9]{5,20}',symbol): raise ValueError('Некорректный Bybit symbol')
+        rows=bybit_public_request('/v5/market/instruments-info',{'category':'linear','symbol':symbol}).get('list') or []
+        if not rows: raise ValueError(f'На Bybit нет linear-инструмента {symbol}')
+        return rows[0]
+
+    def bybit_copy_status(self,query):
+        symbol=(query.get('symbol',[''])[0] or '').upper()
+        wallet=bybit_private_request('GET','/v5/account/wallet-balance',{'accountType':'UNIFIED','coin':'USDT'}).get('list') or []
+        account=wallet[0] if wallet else {}; coin=(account.get('coin') or [{}])[0]
+        payload={'source':'bybit','max_order_usd':BYBIT_COPY_MAX_USD,'leverage':'1','wallet_balance':float(coin.get('walletBalance') or 0),'available_balance':float(coin.get('availableToWithdraw') or account.get('totalAvailableBalance') or 0),'equity':float(coin.get('equity') or account.get('totalEquity') or 0),'positions':self.bybit_copy_positions(),'open_orders':self.bybit_copy_open_orders()}
+        if symbol:
+            ticker=(bybit_public_request('/v5/market/tickers',{'category':'linear','symbol':symbol}).get('list') or [{}])[0]
+            payload['symbol']=symbol; payload['last_price']=float(ticker.get('lastPrice') or 0); payload['mark_price']=float(ticker.get('markPrice') or 0)
+        self.send_json(payload)
+
+    def bybit_copy_order(self,item):
+        if item.get('confirm') is not True: return self.send_json({'error':'Для реального ордера нужно отдельное подтверждение'},403)
+        symbol=str(item.get('symbol') or '').upper(); side=str(item.get('side') or '')
+        if side not in ('Buy','Sell'): raise ValueError('Сторона ордера должна быть Buy или Sell')
+        if self.bybit_copy_positions(): return self.send_json({'error':'Уже есть открытая USDT perpetual позиция. Сначала закройте её.'},409)
+        if self.bybit_copy_open_orders(): return self.send_json({'error':'Уже есть активная лимитная заявка. Дождитесь исполнения или отмените её на Bybit.'},409)
+        instrument=self.bybit_linear_instrument(symbol); ticker=(bybit_public_request('/v5/market/tickers',{'category':'linear','symbol':symbol}).get('list') or [{}])[0]
+        price=float(ticker.get('lastPrice') or ticker.get('markPrice') or 0); lot=instrument.get('lotSizeFilter') or {}; step=float(lot.get('qtyStep') or 0); minimum=float(lot.get('minOrderQty') or 0)
+        qty=decimal_floor(BYBIT_COPY_MAX_USD/price,step)
+        if not price or not qty or qty<minimum: return self.send_json({'error':f'{symbol} нельзя открыть на ${BYBIT_COPY_MAX_USD}: минимальный размер Bybit больше допустимого лимита.'},422)
+        try:
+            bybit_private_request('POST','/v5/position/set-leverage',body={'category':'linear','symbol':symbol,'buyLeverage':'1','sellLeverage':'1'})
+        except ValueError as error:
+            if 'leverage not modified' not in str(error).lower(): raise
+        position_idx=1 if side=='Buy' else 2
+        order=bybit_private_request('POST','/v5/order/create',body={'category':'linear','symbol':symbol,'side':side,'orderType':'Limit','qty':format(qty,'.12f').rstrip('0').rstrip('.'),'price':format(price,'.12f').rstrip('0').rstrip('.'),'timeInForce':'GTC','positionIdx':position_idx,'orderLinkId':'lr-copy-'+str(int(time.time()*1000))})
+        self.send_json({'ok':True,'symbol':symbol,'side':side,'price':price,'qty':qty,'notional_usd':qty*price,'max_order_usd':BYBIT_COPY_MAX_USD,'order':order})
+
+    def bybit_copy_close(self,item):
+        if item.get('confirm') is not True: return self.send_json({'error':'Для закрытия реальной позиции нужно отдельное подтверждение'},403)
+        symbol=str(item.get('symbol') or '').upper(); positions=[x for x in self.bybit_copy_positions() if x['symbol']==symbol]
+        if not positions: return self.send_json({'error':'Открытая позиция не найдена'},404)
+        position=positions[0]; side='Sell' if position['side']=='Buy' else 'Buy'; ticker=(bybit_public_request('/v5/market/tickers',{'category':'linear','symbol':symbol}).get('list') or [{}])[0]; price=float(ticker.get('lastPrice') or ticker.get('markPrice') or 0)
+        order=bybit_private_request('POST','/v5/order/create',body={'category':'linear','symbol':symbol,'side':side,'orderType':'Limit','qty':format(position['size'],'.12f').rstrip('0').rstrip('.'),'price':format(price,'.12f').rstrip('0').rstrip('.'),'timeInForce':'GTC','positionIdx':position['position_idx'],'reduceOnly':True,'orderLinkId':'lr-close-'+str(int(time.time()*1000))})
+        self.send_json({'ok':True,'symbol':symbol,'side':side,'price':price,'qty':position['size'],'order':order})
+
+    def bybit_copy_follow(self,item):
+        global COPY_FOLLOW_THREAD
+        if item.get('confirm') is not True: return self.send_json({'error':'Для автоматического закрытия нужно отдельное подтверждение'},403)
+        leader=self.validate_address(str(item.get('leader') or ''))
+        coin=str(item.get('coin') or '').upper(); symbol=str(item.get('symbol') or '').upper(); side=str(item.get('side') or '')
+        if not coin or not re.fullmatch(r'[A-Z0-9]{5,20}',symbol) or side not in ('Buy','Sell'): raise ValueError('Некорректные параметры отслеживания')
+        orders=[order for order in self.bybit_copy_open_orders() if order['symbol']==symbol and not order['reduce_only']]
+        positions=[position for position in self.bybit_copy_positions() if position['symbol']==symbol]
+        if not orders and not positions: return self.send_json({'error':'На Bybit нет активной заявки или позиции для отслеживания'},404)
+        leader_snapshot=[]
+        try:
+            raw=self.hyperliquid_request({'type':'clearinghouseState','user':leader})
+            for item in raw.get('assetPositions',[]):
+                pos=item.get('position',{}); size=float(pos.get('szi',0) or 0)
+                if size: leader_snapshot.append(str(pos.get('coin','')).upper())
+        except Exception:
+            leader_snapshot=[]
+        state={'active':True,'leader':leader,'coin':coin,'symbol':symbol,'side':side,'armed_at':int(time.time()*1000),'last_checked_at':0,'missing_checks':0,'last_error':None,'action':None,'entry_order_ids':[order['order_id'] for order in orders],'leader_positions_seen':leader_snapshot}
+        with COPY_FOLLOW_LOCK: save_copy_follow_state(state); COPY_FOLLOW_STOP.clear()
+        if not COPY_FOLLOW_THREAD or not COPY_FOLLOW_THREAD.is_alive():
+            COPY_FOLLOW_THREAD=threading.Thread(target=self.copy_follow_worker,daemon=True); COPY_FOLLOW_THREAD.start()
+        self.send_json(state)
+
+    def bybit_orderbook(self,query):
+        symbol=str(query.get('symbol',['BTCUSDT'])[0] or 'BTCUSDT').upper(); depth=min(max(int(query.get('depth',['50'])[0]),1),50)
+        raw=bybit_public_request('/v5/market/orderbook',{'category':'linear','symbol':symbol,'limit':depth}); item=raw if raw.get('b') is not None else (raw.get('list') or [{}])[0]
+        bids=[{'price':float(x[0]),'size':float(x[1]),'usd':float(x[0])*float(x[1])} for x in item.get('b',[])]; asks=[{'price':float(x[0]),'size':float(x[1]),'usd':float(x[0])*float(x[1])} for x in item.get('a',[])]
+        levels=bids+asks; threshold=statistics.quantiles([x['usd'] for x in levels],n=4)[-1] if len(levels)>=4 else 0
+        for x in levels: x['large']=x['usd']>=threshold and threshold>0
+        bid_usd=sum(x['usd'] for x in bids); ask_usd=sum(x['usd'] for x in asks); pressure='BUY' if bid_usd>ask_usd*1.1 else 'SELL' if ask_usd>bid_usd*1.1 else 'BALANCED'
+        self.send_json({'source':'bybit','symbol':symbol,'bids':bids,'asks':asks,'best_bid':bids[0]['price'] if bids else None,'best_ask':asks[0]['price'] if asks else None,'large_threshold_usd':threshold,'pressure':pressure,'updated_at':int(time.time()*1000)})
+
+    def hyperliquid_copy_leader(self,query):
+        # Default mode is strictly live: discover current participants from the
+        # public stream and read their current clearinghouse state. Local fills
+        # are only used when the user explicitly enables the history fallback.
+        if query.get('local',['0'])[0] != '1':
+            requested_coin=(query.get('coin',[''])[0] or '').upper().replace('USDT','')
+            fresh,_=self.recent_market_trades('ALL',100,force_fresh=True); candidates=[]
+            for trade in fresh:
+                for address in normalize_addresses(trade.get('users') or []):
+                    if address not in candidates: candidates.append(address)
+            live=[]
+            for user in candidates[:2]:
+                try:
+                    state=self.hyperliquid_request({'type':'clearinghouseState','user':user},allow_cache=False); margin=state.get('marginSummary') or state.get('crossMarginSummary') or {}; positions=[]
+                    for raw in state.get('assetPositions',[]):
+                        pos=raw.get('position',{}); size=float(pos.get('szi',0) or 0)
+                        if size: positions.append({'coin':pos.get('coin'),'side':'Buy' if size>0 else 'Sell','size':abs(size),'entry_price':float(pos.get('entryPx',0) or 0),'position_value':float(pos.get('positionValue',0) or 0),'unrealized_pnl':float(pos.get('unrealizedPnl',0) or 0),'liquidation_price':pos.get('liquidationPx'),'opened_at':0})
+                    live_now=int(time.time()*1000); fill_rows=self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':live_now-60*60*1000,'endTime':live_now},allow_cache=False)
+                    last_by_coin={}
+                    for raw_fill in fill_rows:
+                        normalized=self.normalize_fill(raw_fill,user); last_by_coin[normalized['coin']]=max(last_by_coin.get(normalized['coin'],0),int(normalized.get('time') or 0))
+                    live_cutoff=int(time.time()*1000)-20*60*1000
+                    positions=[position for position in positions if last_by_coin.get(position['coin'],0)>=live_cutoff]
+                    if requested_coin: positions=[position for position in positions if str(position.get('coin') or '').upper()==requested_coin]
+                    for position in positions: position['opened_at']=last_by_coin.get(position['coin'],0)
+                    recent_fills=[self.normalize_fill(raw_fill,user) for raw_fill in fill_rows if int(raw_fill.get('time') or 0)>=live_cutoff]
+                    if positions: live.append({'address':user,'net_closed_pnl':0.0,'last_time':int(time.time()*1000),'fills':len(fill_rows),'source':'live_market','checked_saved_addresses':0,'account_value':float(margin.get('accountValue',0) or 0),'open_pnl':sum(x['unrealized_pnl'] for x in positions),'positions':positions,'target_position':max(positions,key=lambda x:x['unrealized_pnl']),'recent_fills':recent_fills[-50:]})
+                except Exception: continue
+            if not live: return self.send_json({'error':'В живом потоке сейчас нет подходящего открытого адреса. Включите «анализировать из сохранённых» только для локальной истории.'},404)
+            leader=max(live,key=lambda item:item['open_pnl']); self.send_json({'leader':leader,'ranking':sorted(live,key=lambda item:item['open_pnl'],reverse=True)[:10],'updated_at':int(time.time()*1000),'source':'live_only'}); return
+        saved=load_saved_addresses()
+        if not saved: return self.send_json({'error':'Нет сохранённых Hyperliquid-адресов'},404)
+        since=int(time.time()*1000)-24*60*60*1000; placeholders=','.join('?' for _ in saved)
+        connection=db()
+        rows=connection.execute("SELECT lower(json_extract(payload,'$.user')) AS address, SUM(COALESCE(json_extract(payload,'$.closed_pnl'),0)-COALESCE(json_extract(payload,'$.fee'),0)) AS net_pnl, MAX(COALESCE(json_extract(payload,'$.time'),0)) AS last_time, COUNT(*) AS fills FROM hyperliquid WHERE lower(json_extract(payload,'$.user')) IN ("+placeholders+") GROUP BY lower(json_extract(payload,'$.user'))",saved).fetchall(); connection.close()
+        ranked=sorted(({'address':row['address'],'net_closed_pnl':float(row['net_pnl'] or 0),'last_time':int(row['last_time'] or 0),'fills':int(row['fills'] or 0)} for row in rows),key=lambda row:(row['net_closed_pnl'],row['last_time']),reverse=True)
+        if not ranked: return self.send_json({'error':'В локальной истории ещё нет fills сохранённых адресов. Сначала обновите Hyperliquid обзор.'},404)
+        leader=ranked[0]; user=leader['address']
+        state=self.hyperliquid_request({'type':'clearinghouseState','user':user},allow_cache=False); margin=state.get('marginSummary') or state.get('crossMarginSummary') or {}; positions=[]
+        for raw in state.get('assetPositions',[]):
+            pos=raw.get('position',{}); size=float(pos.get('szi',0) or 0)
+            if size: positions.append({'coin':pos.get('coin'),'side':'Buy' if size>0 else 'Sell','size':abs(size),'entry_price':float(pos.get('entryPx',0) or 0),'position_value':float(pos.get('positionValue',0) or 0),'unrealized_pnl':float(pos.get('unrealizedPnl',0) or 0),'liquidation_price':pos.get('liquidationPx')})
+        fills=self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':since,'endTime':int(time.time()*1000)},allow_cache=False)
+        opened_at={}
+        for fill in fills:
+            normalized=self.normalize_fill(fill,user)
+            opened_at[normalized['coin']]=max(opened_at.get(normalized['coin'],0),int(normalized['time'] or 0))
+            if normalized['direction'] in ('Open Long','Open Short'):
+                opened_at[normalized['coin']]=max(opened_at.get(normalized['coin'],0),int(normalized['time'] or 0))
+        for position in positions:
+            position['opened_at']=opened_at.get(position['coin'],0)
+        positions=[position for position in positions if position.get('opened_at',0)>=int(time.time()*1000)-20*60*1000]
+        recent=[self.normalize_fill(fill,user) for fill in fills if int(fill.get('time') or 0)>=int(time.time()*1000)-20*60*1000]
+        target=None
+        for fill in reversed(recent):
+            if fill['direction'] in ('Open Long','Open Short'):
+                target=next((position for position in positions if str(position['coin']).upper()==str(fill['coin']).upper()),None)
+                if target: break
+        leader.update({'source':'hyperliquid','checked_saved_addresses':len(saved),'account_value':float(margin.get('accountValue',0) or 0),'open_pnl':sum(position['unrealized_pnl'] for position in positions),'positions':positions,'target_position':target or (positions[0] if positions else None),'recent_fills':recent[-50:]})
+        self.send_json({'leader':leader,'ranking':ranked[:10],'updated_at':int(time.time()*1000)})
+
+    def hyperliquid_notifications(self,query):
+        users=[]
+        for raw in query.get('addresses',[''])[0].split(','):
+            user=raw.strip().lower()
+            if re.fullmatch(r'0x[a-f0-9]{40}',user) and user not in users: users.append(user)
+        since=int(query.get('since',[str(int(time.time()*1000)-30000)])[0]); now=int(time.time()*1000); events=[]
+        for user in users[:40]:
+            try:
+                fills=self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':since,'endTime':now})
+                for raw in fills:
+                    fill=self.normalize_fill(raw,user)
+                    if fill['direction'] in ('Open Long','Open Short','Close Long','Close Short'):
+                        events.append({'id':f"{user}:{fill['trade_id']}:{fill['time']}",'address':user,'coin':fill['coin'],'action':fill['direction'],'side':fill['side'],'usd':fill['usd'],'price':fill['price'],'size':fill['size'],'time':fill['time']})
+            except Exception: continue
+        events.sort(key=lambda item:item['time']); self.send_json({'events':events,'checked':len(users),'since':since,'updated_at':now})
+
+    def hyperliquid_open_pnl_leaders(self, query):
+        """Return the best currently-open PnL position in two live windows.
+
+        The candidate universe is deliberately limited to saved addresses.  No
+        persisted fills are used for ranking and every account/fill request is
+        made with cache disabled.  A position qualifies when its latest open
+        fill for the coin falls inside the selected window.
+        """
+        supplied = query.get('addresses', [''])[0]
+        saved = load_saved_addresses()
+        if supplied:
+            saved = normalize_addresses(saved + supplied.split(','))
+        if not saved:
+            return self.send_json({'error': 'Нет сохранённых или отслеживаемых адресов'}, 404)
+        now = int(time.time() * 1000)
+        windows = [('1h', 60 * 60 * 1000, 'Последний час'), ('2h', 2 * 60 * 60 * 1000, 'Последние 2 часа')]
+        # Keep one live refresh bounded so the UI does not wait indefinitely
+        # when the public API is slow. The full saved list remains available
+        # for the dedicated address/portfolio views.
+        users = saved[:24]
+        def inspect(user):
+            try:
+                start = now - windows[-1][1]
+                raw_fills = self.hyperliquid_request({'type': 'userFillsByTime', 'user': user, 'startTime': start, 'endTime': now}, allow_cache=False)
+                fills = [self.normalize_fill(item, user) for item in raw_fills]
+                opens = {}
+                for fill in fills:
+                    if fill.get('direction') in ('Open Long', 'Open Short'):
+                        coin = str(fill.get('coin') or '').upper()
+                        if coin and int(fill.get('time') or 0) >= opens.get(coin, 0):
+                            opens[coin] = int(fill.get('time') or 0)
+                state = self.hyperliquid_request({'type': 'clearinghouseState', 'user': user}, allow_cache=False)
+                positions = []
+                for raw in state.get('assetPositions', []):
+                    position = raw.get('position', {})
+                    size = float(position.get('szi', 0) or 0)
+                    coin = str(position.get('coin') or '').upper()
+                    opened_at = opens.get(coin, 0)
+                    if not size or not opened_at:
+                        continue
+                    positions.append({'address': user, 'coin': coin, 'side': 'LONG' if size > 0 else 'SHORT',
+                        'position_value': abs(float(position.get('positionValue', 0) or 0)),
+                        'unrealized_pnl': float(position.get('unrealizedPnl', 0) or 0),
+                        'entry_price': float(position.get('entryPx', 0) or 0), 'opened_at': opened_at})
+                return {'address': user, 'positions': positions}
+            except Exception as error:
+                return {'address': user, 'positions': [], 'error': str(error)}
+        with ThreadPoolExecutor(max_workers=min(8, len(users)) or 1) as pool:
+            inspected = list(pool.map(inspect, users))
+        result = {}
+        for key, duration, label in windows:
+            cutoff = now - duration
+            candidates = [position for item in inspected for position in item['positions'] if position['opened_at'] >= cutoff]
+            candidates.sort(key=lambda position: (position['unrealized_pnl'], position['position_value']), reverse=True)
+            best = candidates[0] if candidates else None
+            if best:
+                best = dict(best); best['window'] = label
+            result[key] = best
+        self.send_json({'windows': result, 'checked': len(users), 'updated_at': now, 'source': 'live_only', 'timezone': 'Europe/Moscow'})
+
+    def hyperliquid_saved_leader_summary(self):
+        saved=load_saved_addresses(); now=int(time.time()*1000); since=now-20*60*1000; results=[]
+        # Live-only: every saved address is checked directly for the rolling
+        # last-hour window; no local ranking is used to choose candidates.
+        # Parallelize the bounded live sample so the copy panel does not hang
+        # while one slow public request blocks every other address.
+        # Keep this summary quick enough for a live panel refresh. The full
+        # saved list is still rendered below and can be opened individually.
+        users = saved[:12]
+        def inspect_saved(user):
+            try:
+                live_fills=self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':since,'endTime':now},allow_cache=False)
+                fills=[self.normalize_fill(x,user) for x in live_fills]
+                state=self.hyperliquid_request({'type':'clearinghouseState','user':user},allow_cache=False); margin=state.get('marginSummary') or state.get('crossMarginSummary') or {}; positions=[]
+                for raw in state.get('assetPositions',[]):
+                    p=raw.get('position',{}); size=float(p.get('szi',0) or 0)
+                    if size: positions.append({'coin':p.get('coin'),'side':'Buy' if size>0 else 'Sell','position_value':float(p.get('positionValue',0) or 0),'unrealized_pnl':float(p.get('unrealizedPnl',0) or 0),'entry_price':float(p.get('entryPx',0) or 0)})
+                recent_open=next((x for x in reversed(fills) if x['direction'] in ('Open Long','Open Short')),None)
+                closed=sum(x['closed_pnl'] for x in fills)-sum(abs(x['fee']) for x in fills); open_pnl=sum(x['unrealized_pnl'] for x in positions)
+                # Keep every address with a real recent opening. Open and closed
+                # PnL are ranked independently below, so a losing open position
+                # must not hide an otherwise strong closed-PnL account.
+                if recent_open and int(recent_open.get('time') or 0) >= since:
+                    return {'address':user,'closed_pnl':closed,'open_pnl':open_pnl,'account_value':float(margin.get('accountValue',0) or 0),'positions':positions,'latest_buy':recent_open}
+            except Exception:
+                return None
+            return None
+        with ThreadPoolExecutor(max_workers=min(8, len(users)) or 1) as pool:
+            results = [item for item in pool.map(inspect_saved, users) if item]
+        best_closed=max(results,key=lambda x:x['closed_pnl'],default=None); best_open=max(results,key=lambda x:x['open_pnl'],default=None)
+        self.send_json({'best_closed':best_closed,'best_open':best_open,'checked':len(results),'updated_at':now})
+
+    def hyperliquid_token_leaders(self,query):
+        coin=(query.get('coin',[''])[0] or '').strip().upper().replace('USDT','')
+        if not re.fullmatch(r'[A-Z0-9]{1,20}',coin): return self.send_json({'error':'Введите корректный тикер, например SOL или SOLUSDT'},400)
+        trades,_=self.recent_market_trades(coin,100,force_fresh=True); addresses=[]
+        for trade in trades:
+            for user in normalize_addresses(trade.get('users') or []):
+                if user not in addresses: addresses.append(user)
+        now=int(time.time()*1000); since=now-365*24*60*60*1000; rows=[]
+        def inspect_token_address(user):
+            try:
+                raw=self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':since,'endTime':now},allow_cache=False); fills=[self.normalize_fill(item,user) for item in raw if str(item.get('coin','')).upper()==coin]
+                state=self.hyperliquid_request({'type':'clearinghouseState','user':user},allow_cache=False); position=next((item.get('position',{}) for item in state.get('assetPositions',[]) if str(item.get('position',{}).get('coin','')).upper()==coin and float(item.get('position',{}).get('szi',0) or 0)),None)
+                if not fills and not position: return None
+                closed=sum(fill['closed_pnl']-abs(fill['fee']) for fill in fills); open_pnl=float(position.get('unrealizedPnl',0) or 0) if position else 0.0; size=float(position.get('szi',0) or 0) if position else 0.0; value=float(position.get('positionValue',0) or 0) if position else 0.0
+                last=max(fills,key=lambda item:int(item.get('time') or 0),default=None); rows.append({'address':user,'coin':coin,'open_pnl':open_pnl,'closed_pnl':closed,'total_pnl':open_pnl+closed,'position_value':value,'side':'LONG' if size>0 else 'SHORT' if size<0 else None,'last_action':last.get('action') if last else 'нет fills','last_time':last.get('time') if last else 0,'last_usd':last.get('usd') if last else 0})
+            except Exception: return None
+            return None
+        # The live endpoint must finish within one refresh interval even when
+        # the token has many participants. Each address still uses fresh API
+        # calls; only the independent checks run concurrently.
+        # Keep one live refresh bounded: trades are already newest-first, so
+        # the first participants are the freshest addresses for this token.
+        addresses=addresses[:24]
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            list(pool.map(inspect_token_address, addresses))
+        rows.sort(key=lambda item:(item['total_pnl'],item['last_time']),reverse=True)
+        selected=[]
+        best_open=max(rows,key=lambda item:item['open_pnl'],default=None)
+        best_closed=max(rows,key=lambda item:item['closed_pnl'],default=None)
+        if best_open: best_open=dict(best_open); best_open['selection']='максимальный Open PnL'; selected.append(best_open)
+        if best_closed and (not best_open or best_closed['address']!=best_open['address']): best_closed=dict(best_closed); best_closed['selection']='максимальный Closed PnL'; selected.append(best_closed)
+        self.send_json({'coin':coin,'symbol':coin+'USDT','rows':selected,'checked':len(addresses),'candidates':len(rows),'updated_at':now,'source':'live_only','ranking':'топ-2: Open PnL и Closed PnL за доступную историю'})
+
 def wire_autotrade():
     """Give the engine the same Hyperliquid pipe and radar the UI already uses.
 
