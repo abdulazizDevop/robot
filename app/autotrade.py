@@ -120,6 +120,45 @@ def _should_log_decision(address, coin, side, decision):
         return True
 
 
+# A failed order leaves the signal unseen so a transient problem can be retried,
+# but a permanent one (wrong position mode, notional under the venue's minimum
+# lot) then repeats every poll forever.  One rejected order was sent 100 times.
+# Back off per (address, coin, side) instead, and reset the moment one succeeds.
+FAILURE_BACKOFF_START = 30.0
+FAILURE_BACKOFF_MAX = 900.0
+_FAILURES = {}
+_FAILURE_LOCK = threading.Lock()
+
+
+def _failure_key(address, coin, side):
+    return (str(address).lower(), coin, side)
+
+
+def _blocked_after_failure(address, coin, side):
+    """True while a repeatedly failing signal is still in its backoff window."""
+    with _FAILURE_LOCK:
+        entry = _FAILURES.get(_failure_key(address, coin, side))
+        return bool(entry) and time.monotonic() < entry['retry_at']
+
+
+def _note_failure(address, coin, side):
+    key = _failure_key(address, coin, side)
+    with _FAILURE_LOCK:
+        entry = _FAILURES.get(key) or {'count': 0}
+        entry['count'] += 1
+        delay = min(FAILURE_BACKOFF_START * (2 ** (entry['count'] - 1)), FAILURE_BACKOFF_MAX)
+        entry['retry_at'] = time.monotonic() + delay
+        if len(_FAILURES) > 2048:
+            _FAILURES.clear()
+        _FAILURES[key] = entry
+        return delay
+
+
+def _clear_failure(address, coin, side):
+    with _FAILURE_LOCK:
+        _FAILURES.pop(_failure_key(address, coin, side), None)
+
+
 def _record_decision(address, coin, side, whale_price, market_price, deviation, decision, reason):
     # Executions and failures are always kept; only repeated skips are damped.
     if decision == 'skipped' and not _should_log_decision(address, coin, side, decision):
@@ -833,6 +872,10 @@ def _follow(address, settings):
                              'skipped', 'достигнут лимит ордеров в час')
             return
         mirror_key = f'{address}:{coin}:{side}'
+        if _blocked_after_failure(address, coin, side):
+            _record_decision(address, coin, side, signal['whale_price'], None, None,
+                             'skipped', 'пауза после неудачных ордеров')
+            continue
         market = quotes.get(coin)
         if not market:
             try:
@@ -869,6 +912,7 @@ def _follow(address, settings):
             _mark_seen(signal['key'])
             # Remember what we actually got filled for: closing needs the exact
             # quantity, not the dollar figure that was requested.
+            _clear_failure(address, coin, side)
             _update_mirror(mirror_key, qty=float(result.get('qty') or 0),
                            entry_price=float(result.get('price') or market))
             with STATE_LOCK:
@@ -877,8 +921,9 @@ def _follow(address, settings):
                              'executed', f'ордер {result.get("order_id")} отправлен')
         except TradingError as error:
             _release_mirror(mirror_key)
+            delay = _note_failure(address, coin, side)
             _record_decision(address, coin, side, whale_price, market, deviation,
-                             'failed', str(error))
+                             'failed', f'{error} (следующая попытка через {int(delay)} с)')
 
 
 def execute(coin, side, usd, whale_price, market_price, deviation, address, settings,
