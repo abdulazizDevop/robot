@@ -141,6 +141,10 @@ BYBIT_COPY_MAX_USD=float(os.environ.get('BYBIT_COPY_MAX_USD','10')); BYBIT_RECV_
 # Bybit rejects a signed request whose timestamp falls outside recv_window, so
 # the offset to their clock is refreshed instead of trusting the local one.
 BYBIT_TIME_LOCK=threading.Lock(); BYBIT_TIME_OFFSET=0; BYBIT_TIME_CHECKED_AT=0.0
+# How far back to look for the fill that opened a position. Hyperliquid keeps no
+# open timestamp, so a window shorter than the holding period simply reports
+# "unknown" for every older position.
+POSITION_OPEN_LOOKBACK_MS=int(os.environ.get('POSITION_OPEN_LOOKBACK_DAYS','14'))*86_400_000
 
 HL_LOCK=threading.Lock(); HL_CACHE={}; HL_NEXT_REQUEST_AT=0.0; HL_BLOCKED_UNTIL=0.0; HL_ALL_MARKET_CURSOR=0; HL_REQUEST_INTERVAL=1.0
 # Every distinct userFillsByTime window is its own cache key, so an app left
@@ -782,6 +786,19 @@ class Handler(SimpleHTTPRequestHandler):
             for raw in state.get('assetPositions',[]):
                 pos=raw.get('position',{}); size=float(pos.get('szi',0) or 0)
                 if size: positions.append({'coin':pos.get('coin'),'side':'LONG' if size>0 else 'SHORT','size':size,'entry_price':float(pos.get('entryPx',0) or 0),'position_value':float(pos.get('positionValue',0) or 0),'unrealized_pnl':float(pos.get('unrealizedPnl',0) or 0),'liquidation_price':pos.get('liquidationPx'),'leverage':pos.get('leverage',{})})
+            # clearinghouseState carries no open time, so it is derived from the
+            # most recent Open Long/Open Short fill per coin. Without this the UI
+            # can only print "время неизвестно".
+            opened_at={}
+            try:
+                now_ms=int(time.time()*1000)
+                for raw_fill in self.hyperliquid_request({'type':'userFillsByTime','user':user,'startTime':now_ms-POSITION_OPEN_LOOKBACK_MS,'endTime':now_ms},allow_cache=False):
+                    fill=self.normalize_fill(raw_fill,user)
+                    if fill.get('action') in ('Open Long','Open Short'):
+                        name=str(fill.get('coin') or '').upper()
+                        opened_at[name]=max(opened_at.get(name,0),int(fill.get('time') or 0))
+            except Exception: opened_at={}
+            for position in positions: position['opened_at']=opened_at.get(str(position.get('coin') or '').upper(),0)
             result={'source':'hyperliquid','user':user,'account_value':float(margin.get('accountValue',0) or 0),'total_position_value':float(margin.get('totalNtlPos',0) or 0),'margin_used':float(margin.get('totalRawUsd',0) or 0),'withdrawable':float(state.get('withdrawable',0) or 0),'unrealized_pnl':sum(x['unrealized_pnl'] for x in positions),'positions':positions,'cached':False}
             persisted[user]=result
             try:
@@ -1080,9 +1097,16 @@ class Handler(SimpleHTTPRequestHandler):
             age_cutoff=now-150*24*60*60*1000; first_profit,_=self.hyperliquid_first_profitable_close(user,age_cutoff)
             if not first_profit: continue
             account=self.hyperliquid_request({'type':'clearinghouseState','user':user}); margin=account.get('marginSummary') or account.get('crossMarginSummary') or {}; positions=[]
+            # Open time comes from the fills already fetched above, so the UI can
+            # show when a leader entered instead of "время неизвестно".
+            opened_times={}
+            for fill in fills:
+                if fill.get('action') in ('Open Long','Open Short'):
+                    name=str(fill.get('coin') or '').upper()
+                    opened_times[name]=max(opened_times.get(name,0),int(fill.get('time') or 0))
             for raw in account.get('assetPositions',[]):
                 position=raw.get('position',{}); size=float(position.get('szi',0) or 0)
-                if size: positions.append({'coin':position.get('coin'),'side':'LONG' if size>0 else 'SHORT','unrealized_pnl':float(position.get('unrealizedPnl',0) or 0),'position_value':float(position.get('positionValue',0) or 0)})
+                if size: positions.append({'coin':position.get('coin'),'side':'LONG' if size>0 else 'SHORT','unrealized_pnl':float(position.get('unrealizedPnl',0) or 0),'position_value':float(position.get('positionValue',0) or 0),'opened_at':opened_times.get(str(position.get('coin') or '').upper(),0)})
             open_pnl=sum(position['unrealized_pnl'] for position in positions); actions={name:sum(1 for fill in fills if fill['action']==name) for name in ('Open Long','Close Long','Open Short','Close Short')}
             radar_upsert({'address':user,'last_seen':last_fill,'last_scan':now,'account_age_days':(now-first_profit)/86400000,'account_value':float(margin.get('accountValue',0) or 0),'closed_pnl':net_closed,'open_pnl':open_pnl,'total_pnl':net_closed+open_pnl,'pnl_duration_seconds':max(0,(max(positive_times)-min(positive_times))/1000),'window_seconds':config['window_seconds'],'actions':actions,'positions':positions})
     def hyperliquid_12h_whales(self,query):
