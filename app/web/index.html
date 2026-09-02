@@ -121,4 +121,5 @@ async function loadHlHourReport(){let coin=$('#hlOverviewCoin').value.trim().toU
 let hourReportButton=document.createElement('button');hourReportButton.className='pair';hourReportButton.textContent='Отчёт за 1 час';hourReportButton.title='Собрать PnL участников за последний час и сохранить TXT';hourReportButton.onclick=loadHlHourReport;let overviewToolbar=$('#hlOverviewCoin')?.parentElement;if(overviewToolbar)overviewToolbar.insertBefore(hourReportButton,$('#hlOverviewAuto')?.parentElement||null);else hourReportButton=null;
 </script>
 <script src="/enhancements.js?v=copy-live-40"></script>
+<script src="/autotrade.js?v=1"></script>
 </body></html>

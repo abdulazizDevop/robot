@@ -619,22 +619,22 @@ class Handler(SimpleHTTPRequestHandler):
         with HL_LOCK:
             start=HL_ALL_MARKET_CURSOR%len(coins); selected=[coins[(start+i)%len(coins)] for i in range(batch_size)]; HL_ALL_MARKET_CURSOR=(start+batch_size)%len(coins)
         def fetch_market(name):
-            try:return self.hyperliquid_request({'type':'recentTrades','coin':name})[:10]
+            try:return self.hyperliquid_request({'type':'recentTrades','coin':name},allow_cache=not force_fresh)[:10]
             except Exception:return []
         with ThreadPoolExecutor(max_workers=2) as pool:refreshed=[row for group in pool.map(fetch_market,selected) for row in group]
-        cached=self.cached_recent_trades(coins)
+        cached=[] if force_fresh else self.cached_recent_trades(coins)
         unique={}
         for row in refreshed+cached:
             key=(row.get('coin'),row.get('tid'),row.get('time'),row.get('hash'))
             unique[key]=row
         rows=sorted(unique.values(),key=lambda row:row.get('time',0),reverse=True)[:limit]
-        cached_markets=sum(1 for name in coins if self.cached_recent_trades([name]))
+        cached_markets=0 if force_fresh else sum(1 for name in coins if self.cached_recent_trades([name]))
         return rows,{'markets_total':len(coins),'markets_refreshed':len(selected),'markets_cached':cached_markets}
     def hyperliquid_universe(self):
         meta=self.hyperliquid_request({'type':'meta'}); coins=[x.get('name') for x in meta.get('universe',[]) if x.get('name')]
         self.send_json({'source':'hyperliquid','coins':coins,'count':len(coins)})
     def hyperliquid_trades(self,query):
-        raw_coin=(query.get('coin',[''])[0] or '').strip().upper(); coin=raw_coin or 'ALL'; limit=min(max(int(query.get('limit',['100'])[0]),1),500)
+        raw_coin=(query.get('coin',[''])[0] or '').strip().upper(); coin=raw_coin or 'ALL'; limit=min(max(int(query.get('limit',['100'])[0]),1),500); force_fresh=query.get('fresh',['0'])[0]=='1'
         used_local_cache=False; rows=[]; local_rows=[]; now=int(time.time()*1000); seen=set()
         for item in read_db().get('hyperliquid',[]):
             if item.get('kind')!='market_trade': continue
@@ -648,14 +648,20 @@ class Handler(SimpleHTTPRequestHandler):
         # once anything was cached the panel never refreshed again and showed
         # whichever coin happened to be fetched first.
         try:
-            rows,market_info=self.recent_market_trades(coin,limit)
-        except Exception:
+            rows,market_info=self.recent_market_trades(coin,limit,force_fresh=force_fresh)
+        except Exception as error:
+            if force_fresh:
+                # The overview asks for a guaranteed-live stream and refuses any
+                # answer built from cache, so a failure has to be reported rather
+                # than papered over with stored rows.
+                self.send_json({'source':'hyperliquid','coin':coin,'trades':[],'count':0,'cached':False,'fresh_requested':True,
+                                'waiting_for_api':True,'error':'Ожидание свежего ответа Hyperliquid API. Локальный кэш не используется.','detail':str(error)},503); return
             rows=[]; market_info={'markets_total':0,'markets_refreshed':0,'markets_cached':0,'fallback':'unavailable'}
-        if not rows and local_rows:
+        if not force_fresh and not rows and local_rows:
             used_local_cache=True; rows=sorted(local_rows,key=lambda row:row.get('time',0),reverse=True)[:limit]; market_info={'markets_total':0,'markets_refreshed':0,'markets_cached':len(rows),'fallback':'local_cache'}
         normalized=[{'source':'hyperliquid','kind':'market_trade','coin':x.get('coin',coin),'side':'SELL' if x.get('side')=='A' else 'BUY','price':float(x.get('px',0)),'size':float(x.get('sz',0)),'usd':float(x.get('px',0))*float(x.get('sz',0)),'time':x.get('time'),'tx_hash':x.get('hash'),'trade_id':x.get('tid'),'participants':x.get('users',[])} for x in rows]
         append_rows('hyperliquid',normalized)
-        self.send_json({'source':'hyperliquid','coin':coin,'trades':normalized,'count':len(normalized),'market_info':market_info,'cached':used_local_cache,'warning':'Показан последний локально сохранённый поток; повторите обновление позже.' if used_local_cache else None})
+        self.send_json({'source':'hyperliquid','coin':coin,'trades':normalized,'count':len(normalized),'market_info':market_info,'cached':used_local_cache,'fresh_requested':force_fresh,'refreshed_at':int(time.time()*1000),'warning':'Показан последний локально сохранённый поток; повторите обновление позже.' if used_local_cache else None})
     def hyperliquid_book(self,query):
         coin=(query.get('coin',['BTC'])[0] or 'BTC').upper(); depth=min(max(int(query.get('depth',['20'])[0]),1),50)
         book=self.hyperliquid_request({'type':'l2Book','coin':coin}); levels=book.get('levels',[[],[]]); bids=[{'price':float(x['px']),'size':float(x['sz']),'orders':x.get('n',0),'usd':float(x['px'])*float(x['sz'])} for x in levels[0][:depth]]; asks=[{'price':float(x['px']),'size':float(x['sz']),'orders':x.get('n',0),'usd':float(x['px'])*float(x['sz'])} for x in levels[1][:depth]]
