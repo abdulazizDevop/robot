@@ -86,6 +86,14 @@
   <div class="toolbar">
     <label class="pair">Пересматривать цель, сек <input id="setTargetRefresh" class="input" style="width:100px;min-width:100px" type="number" min="30" max="86400" step="30"></label>
     <label class="pair">Порог смены цели, % <input id="setTargetMargin" class="input" style="width:100px;min-width:100px" type="number" min="0" max="1000" step="5"></label>
+    <label class="pair">Свежесть кандидата, сек <input id="setMaxTargetAge" class="input" style="width:110px;min-width:110px" type="number" min="60" max="604800" step="60"></label>
+  </div>
+  <div class="toolbar">
+    <span class="muted">Радар:</span>
+    <label class="pair">мин. PnL 24ч $ <input id="setRadarMinPnl" class="input" style="width:110px;min-width:110px" type="number" min="0" step="100"></label>
+    <label class="pair">окно, сек <input id="setRadarWindow" class="input" style="width:100px;min-width:100px" type="number" min="300" max="259200" step="3600"></label>
+    <label class="pair">свежесть сделки, сек <input id="setRadarMaxAge" class="input" style="width:110px;min-width:110px" type="number" min="10" max="86400" step="10"></label>
+    <label class="pair">адресов за скан <input id="setRadarScan" class="input" style="width:100px;min-width:100px" type="number" min="1" max="100" step="1"></label>
   </div>
   <div class="toolbar">
     <label class="pair"><input id="setAutoClose" type="checkbox"> закрывать вместе с лидером</label>
@@ -201,6 +209,11 @@
     $('#setCloseChaseAttempts').value = settings.close_chase_attempts;
     $('#setTargetRefresh').value = settings.target_refresh_seconds;
     $('#setTargetMargin').value = settings.target_switch_margin_pct;
+    $('#setMaxTargetAge').value = settings.max_target_age_seconds;
+    $('#setRadarMinPnl').value = settings.radar_min_pnl;
+    $('#setRadarWindow').value = settings.radar_window_seconds;
+    $('#setRadarMaxAge').value = settings.radar_max_age_seconds;
+    $('#setRadarScan').value = settings.radar_scan_addresses;
   }
 
   async function loadSettings() {
@@ -247,6 +260,11 @@
         close_chase_attempts: Number($('#setCloseChaseAttempts').value),
         target_refresh_seconds: Number($('#setTargetRefresh').value),
         target_switch_margin_pct: Number($('#setTargetMargin').value),
+        max_target_age_seconds: Number($('#setMaxTargetAge').value),
+        radar_min_pnl: Number($('#setRadarMinPnl').value),
+        radar_window_seconds: Number($('#setRadarWindow').value),
+        radar_max_age_seconds: Number($('#setRadarMaxAge').value),
+        radar_scan_addresses: Number($('#setRadarScan').value),
       }));
       fillSettings(data.settings);
       const venue = data.venue_status || {};
@@ -310,7 +328,10 @@
       label.className = 'muted';
     }
     if (!rows.length) {
-      box.innerHTML = '<div class="empty">Радар пока не подтвердил ни одного адреса.</div>';
+      const stale = Number(data.stale_candidates || 0);
+      box.innerHTML = stale
+        ? `<div class="empty">Радар пока не подтвердил ни одного свежего адреса. ${stale} найденных ранее отброшены как устаревшие (старше ${data.max_target_age_seconds || 3600} с) — движок не берёт их в работу, чтобы не следовать за китом по данным двухнедельной давности.</div>`
+        : '<div class="empty">Радар пока не подтвердил ни одного адреса.</div>';
       return;
     }
     box.innerHTML = `<table><thead><tr><th>Кандидат</th><th>PnL 24ч</th><th>Счёт</th><th>Источник</th><th></th></tr></thead><tbody>${rows.map((row) => {

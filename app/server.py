@@ -260,7 +260,13 @@ def radar_start_state(item,worker):
     start the very same scanner the UI button starts."""
     global RADAR_THREAD
     window_seconds=min(max(int(item.get('window_seconds',86400) or 86400),1),3*24*60*60)
-    min_pnl=max(float(item.get('min_pnl',1500) or 1500),0); config={'window_seconds':window_seconds,'min_pnl':min_pnl,'max_age_seconds':60}
+    min_pnl=max(float(item.get('min_pnl',1500) or 1500),0)
+    # How recent a whale's last fill must be, and how many candidate
+    # addresses one scan analyses.  Both were fixed at 60s/10 and were the
+    # tightest part of the funnel: the radar confirmed 5 wallets in total.
+    max_age_seconds=min(max(int(item.get('max_age_seconds',60) or 60),10),86400)
+    scan_addresses=min(max(int(item.get('scan_addresses',10) or 10),1),100)
+    config={'window_seconds':window_seconds,'min_pnl':min_pnl,'max_age_seconds':max_age_seconds,'scan_addresses':scan_addresses}
     with RADAR_LOCK:
         RADAR_STATE.update({'running':True,'scanning':False,'started_at':int(time.time()*1000),'last_error':None,'config':config}); RADAR_STOP.clear()
         if not RADAR_THREAD or not RADAR_THREAD.is_alive():
@@ -1094,7 +1100,7 @@ class Handler(SimpleHTTPRequestHandler):
             if event_time<now-config['max_age_seconds']*1000: continue
             for address in normalize_addresses(item.get('users') or []):
                 if address not in candidates: candidates.append(address)
-        for user in candidates[:10]:
+        for user in candidates[:int(config.get('scan_addresses',10))]:
             fills_raw,_=self.hyperliquid_fills_range(user,now-window_ms,now); fills=[self.normalize_fill(fill,user) for fill in fills_raw]
             last_fill=max((int(fill.get('time') or 0) for fill in fills),default=0)
             closed_pnl=sum(fill['closed_pnl'] for fill in fills); fees=sum(abs(fill['fee']) for fill in fills); net_closed=closed_pnl-fees

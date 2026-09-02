@@ -70,6 +70,16 @@ DEFAULT_SETTINGS = {
     # A new candidate has to beat the current one by this much to take over, so
     # near-equal wallets do not make the follower flap between them.
     'target_switch_margin_pct': 20.0,
+    # A radar row is only a candidate while it is this fresh.  Without it the
+    # engine will happily lock onto a wallet last confirmed two weeks ago and
+    # present its stale 24h PnL as a live figure.
+    'max_target_age_seconds': 3600,
+    # Radar thresholds, previously hardcoded in the auto-trade start path so the
+    # operator could not loosen them when nothing was being found.
+    'radar_min_pnl': 1500.0,
+    'radar_window_seconds': 86_400,
+    'radar_max_age_seconds': 60,      # how recent a whale's last fill must be
+    'radar_scan_addresses': 10,       # addresses analysed per 30s scan
 }
 
 _SETTING_TYPES = {
@@ -99,6 +109,11 @@ _SETTING_TYPES = {
     'only_saved_addresses': ('bool',),
     'target_refresh_seconds': ('int', 30, 86_400),
     'target_switch_margin_pct': ('float', 0.0, 1000.0),
+    'max_target_age_seconds': ('int', 60, 604_800),
+    'radar_min_pnl': ('float', 0.0, 10_000_000.0),
+    'radar_window_seconds': ('int', 300, 259_200),
+    'radar_max_age_seconds': ('int', 10, 86_400),
+    'radar_scan_addresses': ('int', 1, 100),
 }
 
 

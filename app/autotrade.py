@@ -327,6 +327,7 @@ STATE = {
     # A target the operator pinned by hand is never rotated automatically.
     'target_pinned': False,
     'target_checked_at': 0,
+    'stale_candidates': 0,
     'last_poll_at': 0,
     'last_error': None,
     'phase': 'idle',
@@ -367,6 +368,7 @@ def snapshot():
     state['only_saved_addresses'] = bool(settings.get('only_saved_addresses'))
     state['saved_addresses'] = saved_addresses()
     state['target_refresh_seconds'] = int(settings.get('target_refresh_seconds', 300))
+    state['max_target_age_seconds'] = int(settings.get('max_target_age_seconds', 3600))
     try:
         state['target_candidates'] = [
             {'address': row.get('address'), 'total_pnl': row.get('total_pnl'),
@@ -374,6 +376,11 @@ def snapshot():
             for row in _candidates(settings)[:10]]
     except Exception:  # noqa: BLE001 - status must never fail
         state['target_candidates'] = []
+    # _candidates() records how many rows it dropped as stale, and it runs after
+    # the snapshot above was copied — so read the counter back here, or the panel
+    # cannot explain why the candidate list is empty.
+    with STATE_LOCK:
+        state['stale_candidates'] = int(STATE.get('stale_candidates') or 0)
     return state
 
 
@@ -394,7 +401,12 @@ def start(target=None):
     if target:
         address = _validate_address(target)
     # The radar is the discovery half and is started exactly as the UI would.
-    _hook('radar_start')({'window_seconds': 86400, 'min_pnl': 1500})
+    _hook('radar_start')({
+        'window_seconds': int(settings.get('radar_window_seconds', 86_400)),
+        'min_pnl': float(settings.get('radar_min_pnl', 1500.0)),
+        'max_age_seconds': int(settings.get('radar_max_age_seconds', 60)),
+        'scan_addresses': int(settings.get('radar_scan_addresses', 10)),
+    })
     with STATE_LOCK:
         STATE.update({
             'running': True, 'started_at': int(time.time() * 1000), 'last_error': None,
@@ -465,9 +477,22 @@ def saved_addresses():
 
 
 def _candidates(settings):
-    """Every address eligible to be followed, strongest first."""
+    """Every address eligible to be followed, strongest first.
+
+    Radar rows persist in the database long after the scan that produced them,
+    so a row is only a candidate while it is fresh.  Without this the engine
+    locks onto whatever the radar last confirmed — which was two weeks old on
+    the live box — and reports that wallet's stale 24h PnL as a live figure.
+    """
     rows = _hook('radar_rows')(100)
     usable = [row for row in rows if row.get('address')]
+    max_age_ms = int(settings.get('max_target_age_seconds', 3600)) * 1000
+    if max_age_ms > 0:
+        now = int(time.time() * 1000)
+        fresh = [row for row in usable
+                 if now - int(row.get('last_scan') or row.get('last_seen') or 0) <= max_age_ms]
+        _set(stale_candidates=len(usable) - len(fresh))
+        usable = fresh
     usable.sort(key=lambda row: (row.get('total_pnl') or 0, row.get('account_value') or 0), reverse=True)
     if not settings.get('only_saved_addresses'):
         return usable
