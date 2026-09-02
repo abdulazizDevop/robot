@@ -50,8 +50,11 @@ echo "==> rate-limit zone"
 # limit_req_zone is only valid in the http context. conf.d/ is included from
 # there, so dropping it in its own file keeps this idempotent.
 cat > "$ZONE_FILE" <<'EOF'
-# Slows credential guessing against the panel's Basic auth.
-limit_req_zone $binary_remote_addr zone=radar_login:10m rate=30r/m;
+# Slows credential guessing without getting in the app's way. The panel opens
+# with one request per saved address (53 on the live box) plus polling, so a
+# per-minute budget throttled real sessions: 30r/m produced 572 rejected
+# requests and a 503 page. 10r/s still stops a brute-forcer dead.
+limit_req_zone $binary_remote_addr zone=radar_login:10m rate=10r/s;
 EOF
 
 echo "==> nginx site for $DOMAIN"
@@ -68,7 +71,7 @@ server {
     proxy_send_timeout 120s;
 
     location / {
-        limit_req zone=radar_login burst=20 nodelay;
+        limit_req zone=radar_login burst=200 nodelay;
         proxy_pass http://127.0.0.1:${UPSTREAM_PORT};
         proxy_http_version 1.1;
         proxy_set_header Host              \$host;
