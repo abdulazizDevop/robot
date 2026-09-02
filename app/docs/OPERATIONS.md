@@ -90,6 +90,30 @@ Memory ceilings (`MemoryMax=768M` / `mem_limit: 768m`) turn a runaway report
 into a restart rather than an OOM-killed VPS. `StartLimitBurst=10` stops a crash
 loop from spinning forever.
 
+## The order path, proven
+
+Until 2026-09-02 not one order had ever reached the exchange: 1846 attempts,
+all rejected with `10001: position idx not match position mode`. The account is
+in hedge mode, where Bybit requires positionIdx 1/2, and trading.py sent none.
+
+Verified live after the fix, on the real account:
+
+```
+probe   BUY  LINK limit @ 7.86 (30% below market)  -> accepted, rested, cancelled
+open    BUY  LINK limit @ 11.232  0.6 LINK ($7)    -> sent · Filled, positionIdx 1
+exchange LINKUSDT idx=1 Buy size=0.6 entry=11.232
+close   SELL LINK market reduceOnly 0.6            -> positionIdx 1, filled
+result  0 open positions, equity $117.73 -> $117.71
+```
+
+The close is the subtle half: in hedge mode positionIdx names the *leg*, not the
+order side, so selling to close a long still carries index 1. Both directions are
+now confirmed against the live API.
+
+Not exercised by this test: `limit_chase` (the test closed at market for a
+guaranteed exit) and the auto-close trigger itself. Their state machines are
+covered by unit tests, not by a live fill.
+
 ## What is still not automatic
 
 - **No take-profit / stop-loss on our own PnL.** Positions close when the
