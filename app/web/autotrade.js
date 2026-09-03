@@ -610,7 +610,22 @@
         requirePositiveWinRate: $('#manWinRate').checked ? '1' : '0',
         requireLastTradeToday: $('#manToday').checked ? '1' : '0',
       });
-      const data = await api('/api/hyperliquid/12h-whales?' + params);
+      // The report can take a minute server-side. It now answers 202 while it
+      // computes in the background, so poll instead of holding one request
+      // open — a phone browser kills a tab that waits that long.
+      let data = null;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        const response = await fetch('/api/hyperliquid/12h-whales?' + params, { cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 202) {
+          status.textContent = `Отчёт считается на сервере… ${(attempt + 1) * 5} с`;
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          continue;
+        }
+        if (!response.ok) throw Error(body.error || `HTTP ${response.status}`);
+        data = body; break;
+      }
+      if (!data) throw Error('Сервер не успел посчитать отчёт за 5 минут, попробуйте ещё раз');
       status.textContent = `Кандидатов: ${data.candidate_count} · проверено: ${data.valid_count} · прошло фильтры: ${data.qualified_count}${data.cached ? ' · из кэша' : ''}`;
       renderCandidates(data.whales || []);
     } catch (error) {

@@ -146,6 +146,39 @@ BYBIT_TIME_LOCK=threading.Lock(); BYBIT_TIME_OFFSET=0; BYBIT_TIME_CHECKED_AT=0.0
 # "unknown" for every older position.
 POSITION_OPEN_LOOKBACK_MS=int(os.environ.get('POSITION_OPEN_LOOKBACK_DAYS','14'))*86_400_000
 
+# Slow aggregate routes.  Each one walks dozens of addresses through the 1 s
+# Hyperliquid pacer, so a single response takes 15-65 s.  The page polls five of
+# them every 15 s; on a phone the overlapping requests pile up until Safari
+# kills the tab.  Serve the last computed answer instantly and refresh it in the
+# background instead (stale-while-revalidate), so a browser never waits on one.
+SLOW_CACHE={}; SLOW_LOCK=threading.Lock(); SLOW_INFLIGHT=set()
+SLOW_TTL=float(os.environ.get('SLOW_ROUTE_TTL','60')); SLOW_MAX_STALE=float(os.environ.get('SLOW_ROUTE_MAX_STALE','1800'))
+def slow_capture(fn):
+    """Run a handler method on a detached Handler and return (status, body)
+    instead of writing to a socket.  Handler.__new__ skips the request
+    constructor; these methods only read module state and call send_json."""
+    h=Handler.__new__(Handler); out={}
+    def record(obj,status=200): out['status']=status; out['body']=json.dumps(obj).encode()
+    h.send_json=record
+    try: fn(h)
+    except Exception as error:
+        out['status']=502; out['body']=json.dumps({'error':str(error)}).encode()
+    return out.get('status',500), out.get('body',b'{"error":"no response"}')
+def slow_refresh(key,fn):
+    """Recompute one key in the background, at most once at a time."""
+    with SLOW_LOCK:
+        if key in SLOW_INFLIGHT: return False
+        SLOW_INFLIGHT.add(key)
+    def run():
+        try:
+            status,body=slow_capture(fn)
+            with SLOW_LOCK:
+                # A transient failure must not evict a good answer.
+                if status<500 or key not in SLOW_CACHE: SLOW_CACHE[key]={'time':time.time(),'status':status,'body':body}
+        finally:
+            with SLOW_LOCK: SLOW_INFLIGHT.discard(key)
+    threading.Thread(target=run,daemon=True,name='slow:'+key[:40]).start(); return True
+
 HL_LOCK=threading.Lock(); HL_CACHE={}; HL_NEXT_REQUEST_AT=0.0; HL_BLOCKED_UNTIL=0.0; HL_ALL_MARKET_CURSOR=0; HL_REQUEST_INTERVAL=1.0
 # Every distinct userFillsByTime window is its own cache key, so an app left
 # running for days would accumulate them without bound.  Cap both caches.
@@ -154,6 +187,24 @@ HL_CACHE_MAX=int(os.environ.get('HL_CACHE_MAX','2000')); DEX_CACHE_MAX=int(os.en
 # days, so a few minutes of staleness is invisible, and the uncached path is
 # slow enough to time out a phone.
 HL_FREQUENCY_CACHE={}; HL_FREQUENCY_LOCK=threading.Lock(); HL_FREQUENCY_TTL=float(os.environ.get('HL_FREQUENCY_TTL','600')); HL_FREQUENCY_MAX=int(os.environ.get('HL_FREQUENCY_MAX','2000'))
+# HL_CACHE was capped by entry count, but a userFillsByTime response for an
+# active whale runs to hundreds of KB and every poll mints a new startTime/
+# endTime key.  2000 such entries took the process from 70 MB to 684 MB in 22 h,
+# a few MB short of the container limit.  Cap by bytes, and drop entries whose
+# TTL has long passed instead of keeping them until the count fills up.
+HL_CACHE_MAX_BYTES=int(os.environ.get('HL_CACHE_MAX_MB','96'))*1024*1024
+def hl_cache_bytes():
+    return sum(v.get('size',0) for v in HL_CACHE.values())
+def evict_hl_cache():
+    """Caller holds HL_LOCK."""
+    now=time.time()
+    for k in [k for k,v in HL_CACHE.items() if now-v['time']>v.get('ttl',5)*4]: HL_CACHE.pop(k,None)
+    if len(HL_CACHE)>HL_CACHE_MAX: evict_cache(HL_CACHE,HL_CACHE_MAX)
+    total=hl_cache_bytes()
+    if total<=HL_CACHE_MAX_BYTES: return
+    for k in sorted(HL_CACHE,key=lambda k:HL_CACHE[k]['time']):
+        total-=HL_CACHE[k].get('size',0); HL_CACHE.pop(k,None)
+        if total<=HL_CACHE_MAX_BYTES*0.75: break
 def evict_cache(cache,limit):
     """Drop the oldest quarter once the cap is passed. Caller holds the lock."""
     if len(cache)<=limit: return
@@ -375,7 +426,14 @@ class Handler(SimpleHTTPRequestHandler):
         u=urllib.parse.urlparse(self.path)
         if u.path.startswith('/api/'):
             try:
-                if u.path=='/api/health': return self.send_json({'ok':True,'database':'sqlite','stored_events':len(read_db()['events'])})
+                if u.path=='/api/health':
+                    with HL_LOCK: hl_n,hl_b=len(HL_CACHE),hl_cache_bytes()
+                    with SLOW_LOCK: slow_n,slow_b=len(SLOW_CACHE),sum(len(v['body']) for v in SLOW_CACHE.values())
+                    rss_mb=None
+                    try:
+                        with open('/proc/self/status') as f: rss_mb=next(int(l.split()[1])//1024 for l in f if l.startswith('VmRSS'))
+                    except Exception: pass
+                    return self.send_json({'ok':True,'database':'sqlite','stored_events':len(read_db()['events']),'rss_mb':rss_mb,'caches':{'hl':{'entries':hl_n,'mb':round(hl_b/1048576,1),'max_mb':HL_CACHE_MAX_BYTES//1048576},'slow':{'entries':slow_n,'kb':slow_b//1024},'dex':len(DEX_CACHE),'frequency':len(HL_FREQUENCY_CACHE),'reports':len(HL_12H_REPORT_CACHE)}})
                 if u.path=='/api/events': return self.send_json(read_db())
                 if u.path=='/api/bybit/kline': return self.bybit_kline(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/bybit/trades': return self.bybit_trades(urllib.parse.parse_qs(u.query))
@@ -390,11 +448,11 @@ class Handler(SimpleHTTPRequestHandler):
                 if u.path=='/api/bybit/orderbook': return self.bybit_orderbook(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/bybit/copy-status': return self.bybit_copy_status(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/bybit/copy-follow-status': return self.send_json(load_copy_follow_state())
-                if u.path=='/api/hyperliquid/copy-leader': return self.hyperliquid_copy_leader(urllib.parse.parse_qs(u.query))
-                if u.path=='/api/hyperliquid/saved-leader-summary': return self.hyperliquid_saved_leader_summary()
-                if u.path=='/api/hyperliquid/open-pnl-leaders': return self.hyperliquid_open_pnl_leaders(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/hyperliquid/copy-leader': q=urllib.parse.parse_qs(u.query); return self.cached_route('copy-leader:'+u.query,lambda h:h.hyperliquid_copy_leader(q))
+                if u.path=='/api/hyperliquid/saved-leader-summary': return self.cached_route('saved-leader-summary',lambda h:h.hyperliquid_saved_leader_summary())
+                if u.path=='/api/hyperliquid/open-pnl-leaders': q=urllib.parse.parse_qs(u.query); return self.cached_route('open-pnl-leaders:'+u.query,lambda h:h.hyperliquid_open_pnl_leaders(q))
                 if u.path=='/api/hyperliquid/notifications': return self.hyperliquid_notifications(urllib.parse.parse_qs(u.query))
-                if u.path=='/api/hyperliquid/token-leaders': return self.hyperliquid_token_leaders(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/hyperliquid/token-leaders': q=urllib.parse.parse_qs(u.query); q.pop('_ts',None); return self.cached_route('token-leaders:'+(q.get('coin',[''])[0] or '').upper(),lambda h:h.hyperliquid_token_leaders(q))
                 if u.path=='/api/hyperliquid/icebergs': return self.hyperliquid_icebergs(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/auto-wallets': return self.hyperliquid_auto_wallets(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/book': return self.hyperliquid_book(urllib.parse.parse_qs(u.query))
@@ -403,7 +461,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if u.path=='/api/hyperliquid/radar/status': return self.hyperliquid_radar_status()
                 if u.path=='/api/hyperliquid/hour-report': return self.hyperliquid_hour_report(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/24h-analysis': return self.hyperliquid_24h_analysis(urllib.parse.parse_qs(u.query))
-                if u.path=='/api/hyperliquid/12h-whales': return self.hyperliquid_12h_whales(urllib.parse.parse_qs(u.query))
+                if u.path=='/api/hyperliquid/12h-whales': q=urllib.parse.parse_qs(u.query); key='12h-whales:'+'&'.join(f'{k}={v[0]}' for k,v in sorted(q.items()) if k!='_ts'); return self.cached_route(key,lambda h:h.hyperliquid_12h_whales(q),ttl=300,async_cold=True)
                 if u.path=='/api/hyperliquid/24h-deep': return self.hyperliquid_24h_deep(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/hyperliquid/paper-backtest': return self.hyperliquid_paper_backtest(urllib.parse.parse_qs(u.query))
                 if u.path=='/api/dex/onchain': return self.dex_onchain_buys(urllib.parse.parse_qs(u.query))
@@ -561,8 +619,9 @@ class Handler(SimpleHTTPRequestHandler):
             if wait: time.sleep(wait)
             raw=json.dumps(body).encode(); req=urllib.request.Request('https://api.hyperliquid.xyz/info',data=raw,headers={'Content-Type':'application/json','User-Agent':'LiquidationRadar/1.0'})
             try:
-                with urllib.request.urlopen(req,timeout=4) as response:data=json.loads(response.read())
-                with HL_LOCK:HL_CACHE[key]={'time':time.time(),'data':data};evict_cache(HL_CACHE,HL_CACHE_MAX)
+                with urllib.request.urlopen(req,timeout=4) as response:payload=response.read()
+                data=json.loads(payload)
+                with HL_LOCK:HL_CACHE[key]={'time':time.time(),'data':data,'size':len(payload),'ttl':ttl};evict_hl_cache()
                 return data
             except urllib.error.HTTPError as error:
                 last_error=error
@@ -1564,6 +1623,27 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({'error':str(error)},400)
         except Exception as error:
             return self.send_json({'error':f'{type(error).__name__}: {error}'},500)
+    def cached_route(self,key,fn,ttl=None,async_cold=False):
+        """Answer from SLOW_CACHE when possible.
+        fresh  -> cached bytes.   stale -> cached bytes now, refresh in background.
+        cold   -> compute synchronously, or with async_cold return 202 and let the
+                  client poll; that is for routes that take a minute, which a
+                  phone must never be made to hold open."""
+        ttl=SLOW_TTL if ttl is None else ttl; now=time.time()
+        with SLOW_LOCK: hit=SLOW_CACHE.get(key)
+        if hit and now-hit['time']<ttl: return self.send_raw(hit['status'],hit['body'],age=now-hit['time'])
+        if hit and now-hit['time']<SLOW_MAX_STALE:
+            slow_refresh(key,fn); return self.send_raw(hit['status'],hit['body'],age=now-hit['time'],stale=True)
+        if async_cold:
+            slow_refresh(key,fn)
+            return self.send_json({'computing':True,'retry_after':5,'message':'Отчёт считается в фоне, обновление через несколько секунд.'},202)
+        status,body=slow_capture(fn)
+        with SLOW_LOCK: SLOW_CACHE[key]={'time':time.time(),'status':status,'body':body}
+        return self.send_raw(status,body,age=0)
+    def send_raw(self,status,body,age=0.0,stale=False):
+        self.send_response(status); self.send_header('Content-Type','application/json'); self.send_header('Access-Control-Allow-Origin','*')
+        self.send_header('X-Cache-Age',str(int(age))); self.send_header('X-Cache','stale' if stale else ('hit' if age else 'miss'))
+        self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
     def send_json(self,obj,status=200):
         b=json.dumps(obj).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
     def send_bytes(self,b,content_type,name,download=False):
@@ -1951,4 +2031,22 @@ if __name__=='__main__':
         try:
             autotrade.start(target); print(f'Auto-trade: автозапуск выполнен (цель: {target or "выбирает радар"})')
         except Exception as error: print(f'Auto-trade: автозапуск не удался — {error}')
+    # Warm the slow aggregate routes so the first visitor is not the one who
+    # pays 15-50 s for each of them, and keep them warm on the TTL so a phone
+    # opening the page always gets an instant answer.
+    # Stale-while-revalidate already refreshes anything a visitor actually
+    # looks at, so this only covers the first load after a restart and a cache
+    # that has gone cold overnight.  Refreshing on the 60 s TTL would keep the
+    # 1 s Hyperliquid pacer ~80 % busy for nobody; every 10 min, and only once
+    # an entry is older than 15 min, costs a few percent instead.
+    def slow_prewarm():
+        keys=(('saved-leader-summary',lambda h:h.hyperliquid_saved_leader_summary()),
+              ('open-pnl-leaders:',lambda h:h.hyperliquid_open_pnl_leaders({})),
+              ('copy-leader:',lambda h:h.hyperliquid_copy_leader({})))
+        while True:
+            for key,fn in keys:
+                with SLOW_LOCK: hit=SLOW_CACHE.get(key)
+                if not hit or time.time()-hit['time']>=SLOW_MAX_STALE/2: slow_refresh(key,fn)
+            time.sleep(600)
+    threading.Thread(target=slow_prewarm,daemon=True,name='slow-prewarm').start()
     ThreadingHTTPServer((BIND_HOST,port),Handler).serve_forever()

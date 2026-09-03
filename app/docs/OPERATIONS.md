@@ -55,6 +55,42 @@ shape.
 All are capped now (`HL_CACHE_MAX=2000`, `DEX_CACHE_MAX=500`, 32 reports) with
 oldest-first eviction. `trading.py`'s read cache is capped at 256.
 
+A count cap turned out not to be enough. A `userFillsByTime` reply for an
+active whale is hundreds of KB and every poll mints a new `startTime/endTime`
+key, so 2000 entries were still ~570 MB:
+
+```
+after 22 h:  container 687 / 768 MiB, python RSS 684 MB  (limit 81 MB away)
+fix:         HL_CACHE capped by BYTES (HL_CACHE_MAX_MB=96) and entries past
+             4x their TTL dropped on every write
+after fix:   RSS 60 MB, HL cache 2.5 MB
+```
+
+`GET /api/health` now reports `rss_mb` and every cache's size, so growth is
+visible from a browser without ssh.
+
+### 7. Slow aggregate routes and the phone that kept crashing
+
+`saved-leader-summary`, `open-pnl-leaders`, `token-leaders`, `copy-leader` and
+the manual-analysis report each walk dozens of addresses through the 1 s
+Hyperliquid pacer: 15–65 s per response. The page polled five of them every
+15 s, requests overlapped and piled up, and iOS Safari killed the tab.
+
+They are served **stale-while-revalidate** now: a fresh cache answers in
+~0.4 s, a stale one answers instantly and refreshes in the background, and the
+65 s report returns `202 {computing:true}` on a cold miss so the browser polls
+instead of holding a connection open for a minute. `X-Cache: hit|stale|miss`
+and `X-Cache-Age` are on every response. Measured on the server:
+
+```
+open-pnl-leaders   cold 55.6 s -> warm 0.41 s
+saved-leader-summary cold 73.4 s -> warm 0.42 s
+12h-whales         202 in 0.44 s -> 200 from cache 90 s later in 0.6 s
+```
+
+A pre-warm covers the first load after a restart; after that only what a
+visitor actually looks at is refreshed.
+
 ### 5. Unbounded disk
 
 `radar.sqlite3` was already 58 MB at export and grows with every captured market
