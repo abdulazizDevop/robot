@@ -406,6 +406,7 @@ def start(target=None):
         'min_pnl': float(settings.get('radar_min_pnl', 1500.0)),
         'max_age_seconds': int(settings.get('radar_max_age_seconds', 60)),
         'scan_addresses': int(settings.get('radar_scan_addresses', 10)),
+        'min_age_days': int(settings.get('radar_min_age_days', 150)),
     })
     with STATE_LOCK:
         STATE.update({

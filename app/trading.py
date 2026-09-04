@@ -80,6 +80,10 @@ DEFAULT_SETTINGS = {
     'radar_window_seconds': 86_400,
     'radar_max_age_seconds': 60,      # how recent a whale's last fill must be
     'radar_scan_addresses': 10,       # addresses analysed per 30s scan
+    # How long ago the wallet's first profitable close must be. This was
+    # hardcoded at 150 days and was the gate that actually emptied the radar:
+    # every whale that cleared the PnL bar was rejected here.
+    'radar_min_age_days': 150,
 }
 
 _SETTING_TYPES = {
@@ -114,6 +118,7 @@ _SETTING_TYPES = {
     'radar_window_seconds': ('int', 300, 259_200),
     'radar_max_age_seconds': ('int', 10, 86_400),
     'radar_scan_addresses': ('int', 1, 100),
+    'radar_min_age_days': ('int', 0, 3650),
 }
 
 

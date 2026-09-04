@@ -150,6 +150,46 @@ Not exercised by this test: `limit_chase` (the test closed at market for a
 guaranteed exit) and the auto-close trigger itself. Their state machines are
 covered by unit tests, not by a live fill.
 
+## Why the radar panel showed nothing
+
+The client reported "Покупки и продажи радара" sitting at 0 buys / 0 sells while
+claiming "найдено адресов по фильтру: 5 · обновляется из live-сканирования".
+Four separate faults, measured on the live box:
+
+1. **One 429 killed the whole scan.** The candidate loop had no try/except, so a
+   single rate-limited address aborted every remaining candidate. The worker
+   caught it 30 s later and hit the same wall forever. `last_error` was
+   permanently "Hyperliquid временно недоступен". Each candidate is now wrapped;
+   failures are counted and reported as `last_skipped`.
+
+2. **17-day-old rows were presented as live.** `radar/status` returned every row
+   in the database. Rows are now filtered by `RADAR_ROW_TTL` (900 s) and the
+   withheld count is reported as `stale_count`.
+
+3. **Those stale rows had no `opened_at`.** They predate that field, so the
+   panel's window filter fell back to `last_seen` (17 days) and dropped every
+   position — hence 0/0 even with 65 positions stored.
+
+4. **The radar was not running at all**, and nothing started it. `RADAR_AUTOSTART=1`
+   now starts it on boot with the operator's saved thresholds, and the radar
+   panel's own Start persists what it was given so a restart does not silently
+   revert to defaults.
+
+The account-age gate was also hardcoded at 150 days; it is `radar_min_age_days`
+now. Lowering it does not help much, which is the honest finding:
+
+```
+65 recent-trade participants checked for account age
+   6 have any profitable close in history   (all already >150 days old)
+  59 have none  -> rejected regardless of the threshold
+```
+
+Candidates come from `recentTrades` participants — mostly ordinary counterparties,
+not whales. Live discovery is therefore low-yield by construction; the radar
+confirmed 5 wallets in its entire lifetime. The productive path is the saved
+address list, which works well: `open-pnl-leaders` returns a leader holding
+$570,801 in unrealised PnL from the 53 saved wallets.
+
 ## What is still not automatic
 
 - **No take-profit / stop-loss on our own PnL.** Positions close when the

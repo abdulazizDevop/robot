@@ -94,6 +94,7 @@
     <label class="pair">окно, сек <input id="setRadarWindow" class="input" style="width:100px;min-width:100px" type="number" min="300" max="259200" step="3600"></label>
     <label class="pair">свежесть сделки, сек <input id="setRadarMaxAge" class="input" style="width:110px;min-width:110px" type="number" min="10" max="86400" step="10"></label>
     <label class="pair">адресов за скан <input id="setRadarScan" class="input" style="width:100px;min-width:100px" type="number" min="1" max="100" step="1"></label>
+    <label class="pair">возраст счёта, дней <input id="setRadarMinAge" class="input" style="width:110px;min-width:110px" type="number" min="0" max="3650" step="10"></label>
   </div>
   <div class="toolbar">
     <label class="pair"><input id="setAutoClose" type="checkbox"> закрывать вместе с лидером</label>
@@ -214,6 +215,7 @@
     $('#setRadarWindow').value = settings.radar_window_seconds;
     $('#setRadarMaxAge').value = settings.radar_max_age_seconds;
     $('#setRadarScan').value = settings.radar_scan_addresses;
+    $('#setRadarMinAge').value = settings.radar_min_age_days;
   }
 
   async function loadSettings() {
@@ -265,6 +267,7 @@
         radar_window_seconds: Number($('#setRadarWindow').value),
         radar_max_age_seconds: Number($('#setRadarMaxAge').value),
         radar_scan_addresses: Number($('#setRadarScan').value),
+        radar_min_age_days: Number($('#setRadarMinAge').value),
       }));
       fillSettings(data.settings);
       const venue = data.venue_status || {};

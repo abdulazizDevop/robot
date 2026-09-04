@@ -292,6 +292,10 @@ def save_onchain_address(value):
         os.replace(temporary,ONCHAIN_ADDRESSES); return addresses
 
 RADAR_LOCK=threading.Lock(); RADAR_STOP=threading.Event(); RADAR_THREAD=None
+# A radar row stays in the database after the scan that wrote it, so the panel
+# was presenting wallets last confirmed 17 days ago as "обновляется из
+# live-сканирования". Only rows re-confirmed inside this window count as live.
+RADAR_ROW_TTL=float(os.environ.get('RADAR_ROW_TTL','900'))
 RADAR_STATE={'running':False,'scanning':False,'started_at':0,'last_scan_at':0,'last_error':None,'config':{'window_seconds':86400,'min_pnl':1500.0,'max_age_seconds':60}}
 def radar_db():
     connection=sqlite_pragmas(sqlite3.connect(RADAR_DB,check_same_thread=False,timeout=15)); connection.row_factory=sqlite3.Row
@@ -317,7 +321,8 @@ def radar_start_state(item,worker):
     # tightest part of the funnel: the radar confirmed 5 wallets in total.
     max_age_seconds=min(max(int(item.get('max_age_seconds',60) or 60),10),86400)
     scan_addresses=min(max(int(item.get('scan_addresses',10) or 10),1),100)
-    config={'window_seconds':window_seconds,'min_pnl':min_pnl,'max_age_seconds':max_age_seconds,'scan_addresses':scan_addresses}
+    min_age_days=min(max(int(item.get('min_age_days',150) or 0),0),3650)
+    config={'window_seconds':window_seconds,'min_pnl':min_pnl,'max_age_seconds':max_age_seconds,'scan_addresses':scan_addresses,'min_age_days':min_age_days}
     with RADAR_LOCK:
         RADAR_STATE.update({'running':True,'scanning':False,'started_at':int(time.time()*1000),'last_error':None,'config':config}); RADAR_STOP.clear()
         if not RADAR_THREAD or not RADAR_THREAD.is_alive():
@@ -1133,9 +1138,24 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_json({'source':'hyperliquid','summary':summary,'accounts':ranked,'report_path':report_path,'report':content,'method':'real_market_trades','pnl_available':False})
     def hyperliquid_radar_status(self):
         with RADAR_LOCK: state=dict(RADAR_STATE); state['config']=dict(RADAR_STATE['config'])
-        rows=radar_rows(); self.send_json({'running':state['running'],'scanning':state['scanning'],'started_at':state['started_at'],'last_scan_at':state['last_scan_at'],'last_error':state['last_error'],'config':state['config'],'count':len(rows),'database_path':RADAR_DB,'addresses':rows})
+        rows=radar_rows(); now=int(time.time()*1000)
+        def _age(row): return now-int(row.get('last_scan') or row.get('last_seen') or 0)
+        fresh=[r for r in rows if _age(r)<=RADAR_ROW_TTL*1000]
+        stale=[r for r in rows if _age(r)>RADAR_ROW_TTL*1000]
+        self.send_json({'running':state['running'],'scanning':state['scanning'],'started_at':state['started_at'],'last_scan_at':state['last_scan_at'],'last_error':state['last_error'],'config':state['config'],'count':len(fresh),'database_path':RADAR_DB,'addresses':fresh,'stale_count':len(stale),'row_ttl_seconds':RADAR_ROW_TTL,'stale_oldest_minutes':int(max((_age(r) for r in stale),default=0)/60000),'last_skipped':state.get('last_skipped',0),'last_skip_examples':state.get('last_skip_examples',[]),'last_candidates':state.get('last_candidates',0)})
     def hyperliquid_radar_start(self,item):
-        radar_start_state(item,self.hyperliquid_radar_worker); self.hyperliquid_radar_status()
+        radar_start_state(item,self.hyperliquid_radar_worker)
+        # Persist what the panel was started with. RADAR_STATE is in-memory,
+        # so without this a restart silently reverted the operator's chosen
+        # thresholds to the defaults and the autostart rescanned with them.
+        keep={'window_seconds':'radar_window_seconds','min_pnl':'radar_min_pnl',
+              'max_age_seconds':'radar_max_age_seconds','scan_addresses':'radar_scan_addresses',
+              'min_age_days':'radar_min_age_days'}
+        updates={dest:item[src] for src,dest in keep.items() if item.get(src) is not None}
+        if updates:
+            try: trading.save_settings(updates)
+            except Exception: pass
+        self.hyperliquid_radar_status()
     def hyperliquid_radar_stop(self):
         radar_stop_state(); self.hyperliquid_radar_status()
     def hyperliquid_radar_worker(self):
@@ -1159,27 +1179,39 @@ class Handler(SimpleHTTPRequestHandler):
             if event_time<now-config['max_age_seconds']*1000: continue
             for address in normalize_addresses(item.get('users') or []):
                 if address not in candidates: candidates.append(address)
+        skipped=[]
         for user in candidates[:int(config.get('scan_addresses',10))]:
-            fills_raw,_=self.hyperliquid_fills_range(user,now-window_ms,now); fills=[self.normalize_fill(fill,user) for fill in fills_raw]
-            last_fill=max((int(fill.get('time') or 0) for fill in fills),default=0)
-            closed_pnl=sum(fill['closed_pnl'] for fill in fills); fees=sum(abs(fill['fee']) for fill in fills); net_closed=closed_pnl-fees
-            positive_times=[int(fill['time']) for fill in fills if fill['closed_pnl']>0 and fill.get('time')]
-            if not positive_times or last_fill<now-config['max_age_seconds']*1000 or net_closed<config['min_pnl']: continue
-            age_cutoff=now-150*24*60*60*1000; first_profit,_=self.hyperliquid_first_profitable_close(user,age_cutoff)
-            if not first_profit: continue
-            account=self.hyperliquid_request({'type':'clearinghouseState','user':user}); margin=account.get('marginSummary') or account.get('crossMarginSummary') or {}; positions=[]
-            # Open time comes from the fills already fetched above, so the UI can
-            # show when a leader entered instead of "время неизвестно".
-            opened_times={}
-            for fill in fills:
-                if fill.get('action') in ('Open Long','Open Short'):
-                    name=str(fill.get('coin') or '').upper()
-                    opened_times[name]=max(opened_times.get(name,0),int(fill.get('time') or 0))
-            for raw in account.get('assetPositions',[]):
-                position=raw.get('position',{}); size=float(position.get('szi',0) or 0)
-                if size: positions.append({'coin':position.get('coin'),'side':'LONG' if size>0 else 'SHORT','unrealized_pnl':float(position.get('unrealizedPnl',0) or 0),'position_value':float(position.get('positionValue',0) or 0),'opened_at':opened_times.get(str(position.get('coin') or '').upper(),0)})
-            open_pnl=sum(position['unrealized_pnl'] for position in positions); actions={name:sum(1 for fill in fills if fill['action']==name) for name in ('Open Long','Close Long','Open Short','Close Short')}
-            radar_upsert({'address':user,'last_seen':last_fill,'last_scan':now,'account_age_days':(now-first_profit)/86400000,'account_value':float(margin.get('accountValue',0) or 0),'closed_pnl':net_closed,'open_pnl':open_pnl,'total_pnl':net_closed+open_pnl,'pnl_duration_seconds':max(0,(max(positive_times)-min(positive_times))/1000),'window_seconds':config['window_seconds'],'actions':actions,'positions':positions})
+                # One rate-limited or malformed address must not end the scan.
+                # Without this a single 429 aborted every remaining candidate,
+                # so the radar reported an error and found nothing, forever.
+                try:
+                    fills_raw,_=self.hyperliquid_fills_range(user,now-window_ms,now); fills=[self.normalize_fill(fill,user) for fill in fills_raw]
+                    last_fill=max((int(fill.get('time') or 0) for fill in fills),default=0)
+                    closed_pnl=sum(fill['closed_pnl'] for fill in fills); fees=sum(abs(fill['fee']) for fill in fills); net_closed=closed_pnl-fees
+                    positive_times=[int(fill['time']) for fill in fills if fill['closed_pnl']>0 and fill.get('time')]
+                    if not positive_times or last_fill<now-config['max_age_seconds']*1000 or net_closed<config['min_pnl']: continue
+                    age_cutoff=now-int(config.get('min_age_days',150))*24*60*60*1000; first_profit,_=self.hyperliquid_first_profitable_close(user,age_cutoff)
+                    if not first_profit: continue
+                    account=self.hyperliquid_request({'type':'clearinghouseState','user':user}); margin=account.get('marginSummary') or account.get('crossMarginSummary') or {}; positions=[]
+                    # Open time comes from the fills already fetched above, so the UI can
+                    # show when a leader entered instead of "время неизвестно".
+                    opened_times={}
+                    for fill in fills:
+                        if fill.get('action') in ('Open Long','Open Short'):
+                            name=str(fill.get('coin') or '').upper()
+                            opened_times[name]=max(opened_times.get(name,0),int(fill.get('time') or 0))
+                    for raw in account.get('assetPositions',[]):
+                        position=raw.get('position',{}); size=float(position.get('szi',0) or 0)
+                        if size: positions.append({'coin':position.get('coin'),'side':'LONG' if size>0 else 'SHORT','unrealized_pnl':float(position.get('unrealizedPnl',0) or 0),'position_value':float(position.get('positionValue',0) or 0),'opened_at':opened_times.get(str(position.get('coin') or '').upper(),0)})
+                    open_pnl=sum(position['unrealized_pnl'] for position in positions); actions={name:sum(1 for fill in fills if fill['action']==name) for name in ('Open Long','Close Long','Open Short','Close Short')}
+                    radar_upsert({'address':user,'last_seen':last_fill,'last_scan':now,'account_age_days':(now-first_profit)/86400000,'account_value':float(margin.get('accountValue',0) or 0),'closed_pnl':net_closed,'open_pnl':open_pnl,'total_pnl':net_closed+open_pnl,'pnl_duration_seconds':max(0,(max(positive_times)-min(positive_times))/1000),'window_seconds':config['window_seconds'],'actions':actions,'positions':positions})
+                except Exception as error:
+                    skipped.append(f"{user[:10]}: {error}")
+                    continue
+        with RADAR_LOCK:
+            RADAR_STATE['last_skipped']=len(skipped); RADAR_STATE['last_skip_examples']=skipped[:3]
+            RADAR_STATE['last_candidates']=len(candidates)
+
     def hyperliquid_12h_whales(self,query):
         """Collect a cached 12-hour whale PnL report from exact user fills."""
         coin=(query.get('coin',[''])[0] or '').strip().upper() or 'ALL'
@@ -2049,4 +2081,18 @@ if __name__=='__main__':
                 if not hit or time.time()-hit['time']>=SLOW_MAX_STALE/2: slow_refresh(key,fn)
             time.sleep(600)
     threading.Thread(target=slow_prewarm,daemon=True,name='slow-prewarm').start()
+    # The overview panel promises a live scan, so the radar has to be running
+    # for it to mean anything. Opt-in, and it uses the same thresholds the
+    # settings panel exposes rather than a second hardcoded set.
+    if os.environ.get('RADAR_AUTOSTART','').strip().lower() in ('1','true','yes','on'):
+        try:
+            radar_start_state({
+                'window_seconds': int(settings.get('radar_window_seconds', 86_400)),
+                'min_pnl': float(settings.get('radar_min_pnl', 1500.0)),
+                'max_age_seconds': int(settings.get('radar_max_age_seconds', 60)),
+                'scan_addresses': int(settings.get('radar_scan_addresses', 10)),
+                'min_age_days': int(settings.get('radar_min_age_days', 150)),
+            }, Handler.__new__(Handler).hyperliquid_radar_worker)
+            print('Радар: автозапуск выполнен')
+        except Exception as error: print(f'Радар: автозапуск не удался — {error}')
     ThreadingHTTPServer((BIND_HOST,port),Handler).serve_forever()
