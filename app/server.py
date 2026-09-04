@@ -414,7 +414,13 @@ class Handler(SimpleHTTPRequestHandler):
         full=os.path.join(WEB_DIR,name)
         if not os.path.isfile(full): return self.send_json({'error':'not found'},404)
         with open(full,'rb') as handle: body=handle.read()
-        self.send_bytes(body,STATIC_TYPES.get(name.rsplit('.',1)[-1],'application/octet-stream'),name)
+        # Nothing sent a Cache-Control header, so Safari cached index.html on
+        # its own heuristic and kept serving one that pointed at the previous
+        # ?v= of the scripts — a deploy then needed a manual hard refresh.
+        # index.html carries those version pointers, so it always revalidates;
+        # the scripts themselves are busted by ?v= and may sit in cache a day.
+        cache='no-cache, must-revalidate' if name=='index.html' else 'public, max-age=86400'
+        self.send_bytes(body,STATIC_TYPES.get(name.rsplit('.',1)[-1],'application/octet-stream'),name,cache_control=cache)
     def do_HEAD(self):
         # SimpleHTTPRequestHandler's own do_HEAD serves straight from the
         # working directory, which would answer HEAD /.env with a 200 and skip
@@ -425,7 +431,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({'error':'not found'},404)
         name=STATIC_FILES[path]; size=os.path.getsize(os.path.join(WEB_DIR,name))
         self.send_response(200); self.send_header('Content-Type',STATIC_TYPES.get(name.rsplit('.',1)[-1],'application/octet-stream'))
-        self.send_header('Content-Length',str(size)); self.end_headers()
+        self.send_header('Content-Length',str(size))
+        self.send_header('Cache-Control','no-cache, must-revalidate' if name=='index.html' else 'public, max-age=86400')
+        self.end_headers()
     def do_GET(self):
         if not self.require_auth(): return
         u=urllib.parse.urlparse(self.path)
@@ -1678,8 +1686,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
     def send_json(self,obj,status=200):
         b=json.dumps(obj).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Access-Control-Allow-Origin','*');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
-    def send_bytes(self,b,content_type,name,download=False):
+    def send_bytes(self,b,content_type,name,download=False,cache_control=None):
         self.send_response(200);self.send_header('Content-Type',content_type);self.send_header('Content-Length',str(len(b)))
+        if cache_control:self.send_header('Cache-Control',cache_control)
         if download:self.send_header('Content-Disposition',f'attachment; filename="{name}"')
         self.end_headers();self.wfile.write(b)
     def log_message(self,*args):pass
