@@ -1649,6 +1649,10 @@ class Handler(SimpleHTTPRequestHandler):
             if path=='/api/autotrade/start': return self.send_json(autotrade.start(item.get('address') or None))
             if path=='/api/autotrade/stop': return self.send_json(autotrade.stop())
             if path=='/api/autotrade/settings': return self.send_json({'ok':True,'settings':trading.save_settings(item),'venue_status':trading.venue_status()})
+            if path=='/api/autotrade/target/add':
+                autotrade.add_target(item.get('address')); return self.send_json(autotrade.snapshot())
+            if path=='/api/autotrade/target/remove':
+                autotrade.remove_target(item.get('address')); return self.send_json(autotrade.snapshot())
             if path=='/api/autotrade/target':
                 autotrade.set_target(item.get('address') or None); return self.send_json(autotrade.snapshot())
             if path=='/api/autotrade/close-all':

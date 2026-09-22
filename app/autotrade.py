@@ -106,6 +106,10 @@ DECISION_LOG_INTERVAL = 300.0
 _DECISION_SEEN = {}
 _DECISION_LOCK = threading.Lock()
 
+# Each followed address costs two Hyperliquid calls per poll, so the extra
+# target list is bounded rather than open-ended.
+MAX_EXTRA_TARGETS = 5
+
 
 def _should_log_decision(address, coin, side, decision):
     key = (address, coin, side, decision)
@@ -327,6 +331,9 @@ STATE = {
     # A target the operator pinned by hand is never rotated automatically.
     'target_pinned': False,
     'target_checked_at': 0,
+    # Additional pinned addresses followed on every tick alongside the primary
+    # target. They never rotate; the operator adds and removes them by hand.
+    'extra_targets': [],
     'stale_candidates': 0,
     'last_poll_at': 0,
     'last_error': None,
@@ -365,6 +372,8 @@ def snapshot():
         'leader_position_value': (leader.get((row['coin'], row['side'])) or {}).get('position_value'),
     } for row in rows]
     state['close_confirmations_required'] = int(settings.get('close_confirmations', 2))
+    state['extra_targets'] = list(state.get('extra_targets') or [])
+    state['max_extra_targets'] = MAX_EXTRA_TARGETS
     state['only_saved_addresses'] = bool(settings.get('only_saved_addresses'))
     state['saved_addresses'] = saved_addresses()
     state['target_refresh_seconds'] = int(settings.get('target_refresh_seconds', 300))
@@ -436,6 +445,35 @@ def set_target(address):
         STATE['target_pinned'] = bool(resolved)
         STATE['phase'] = 'watching' if resolved else 'searching'
     return resolved
+
+
+def add_target(address):
+    """Follow one more address in addition to the primary target."""
+    resolved = _validate_address(address)
+    if trading.load_settings().get('only_saved_addresses'):
+        allowed = saved_addresses()
+        if allowed and resolved.lower() not in allowed:
+            raise TradingError(
+                'Включён режим «только сохранённые адреса»: сначала добавьте '
+                f'{resolved} в список или выключите режим')
+    with STATE_LOCK:
+        if resolved.lower() == str(STATE.get('target') or '').lower():
+            raise TradingError('Этот адрес уже является основной целью')
+        extras = list(STATE.get('extra_targets') or [])
+        if resolved.lower() in (a.lower() for a in extras):
+            raise TradingError('Этот адрес уже отслеживается')
+        if len(extras) >= MAX_EXTRA_TARGETS:
+            raise TradingError(f'Максимум {MAX_EXTRA_TARGETS} дополнительных адресов')
+        extras.append(resolved)
+        STATE['extra_targets'] = extras
+    return extras
+
+
+def remove_target(address):
+    resolved = str(address or '').strip().lower()
+    with STATE_LOCK:
+        STATE['extra_targets'] = [a for a in (STATE.get('extra_targets') or []) if a.lower() != resolved]
+        return list(STATE['extra_targets'])
 
 
 def stop():
@@ -580,6 +618,17 @@ def _tick(settings):
         target = _rotate_target(target, settings)
         _set(phase='watching')
     _follow(target, settings)
+    with STATE_LOCK:
+        extras = list(STATE.get('extra_targets') or [])
+    for address in extras:
+        if address.lower() == str(target).lower():
+            continue
+        try:
+            # Closes were already synced by the primary's _follow; skip the
+            # repeat so N targets do not mean N identical passes over the mirrors.
+            _follow(address, settings, sync=False)
+        except TradingError as error:
+            _set(last_error=f'{address[:10]}…: {error}')
 
 
 def _signals_for(address, settings):
@@ -859,15 +908,16 @@ def whale_open_orders(address):
     return orders
 
 
-def _follow(address, settings):
+def _follow(address, settings, sync=True):
     broker = trading.build_broker(settings)
     # Exits first: a leader who has already left the trade must not have their
     # stale entry re-evaluated as a fresh signal in the same tick.  This covers
     # every mirror we hold, including ones copied from a previous target.
-    try:
-        _sync_closes(settings, broker)
-    except TradingError as error:
-        _set(last_error=f'автозакрытие: {error}')
+    if sync:
+        try:
+            _sync_closes(settings, broker)
+        except TradingError as error:
+            _set(last_error=f'автозакрытие: {error}')
     follow_coins = [str(coin).upper() for coin in settings.get('follow_coins') or []]
     direction = settings.get('follow_direction', 'both')
     tolerance = float(settings.get('max_deviation_pct', 0.5))

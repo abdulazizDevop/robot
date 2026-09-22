@@ -50,6 +50,13 @@
     <button class="pair" id="atSetTarget">Закрепить</button>
     <button class="pair" id="atClearTarget">Авто-выбор</button>
   </div>
+  <div class="toolbar">
+    <span class="muted">Ещё адрес:</span>
+    <input id="atExtraTarget" class="input" style="flex:1;min-width:340px" placeholder="Второй адрес 0x… — отслеживается параллельно с целью">
+    <button class="pair" id="atAddTarget">Добавить</button>
+    <span id="atExtraState" class="muted"></span>
+  </div>
+  <div id="atExtraList"></div>
   <div class="toolbar" style="border-top:1px solid var(--line);padding-top:10px;margin-top:4px">
     <label class="pair"><input id="atOnlySaved" type="checkbox"> торговать только по сохранённым адресам</label>
     <span id="atOnlySavedState" class="muted"></span>
@@ -79,6 +86,7 @@
   </div>
   <div class="toolbar">
     <label class="pair">Порог отклонения % <input id="setDeviation" class="input" style="width:100px;min-width:100px" type="number" min="0" max="100" step="0.1"></label>
+    <span class="pair" style="gap:4px"><button type="button" class="pair" data-dev="1">1%</button><button type="button" class="pair" data-dev="5">5%</button><button type="button" class="pair" data-dev="10">10%</button></span>
     <label class="pair">Сумма ордера $ <input id="setOrderUsd" class="input" style="width:110px;min-width:110px" type="number" min="1" step="10"></label>
     <label class="pair">Смещение лимита % <input id="setOffset" class="input" style="width:110px;min-width:110px" type="number" min="-5" max="5" step="0.01"></label>
     <label class="pair">Опрос, сек <input id="setPoll" class="input" style="width:90px;min-width:90px" type="number" min="1" max="300" step="1"></label>
@@ -308,6 +316,7 @@
       const data = await api('/api/autotrade/status');
       renderStatus(data);
       renderSavedOnly(data);
+      renderExtraTargets(data);
       renderCandidates(data);
       renderMirrors(data);
       refreshWhaleOrders(data.target);
@@ -347,6 +356,40 @@
         <td class="${current ? 'green' : ''}">${current ? 'слежу сейчас' : ''}</td>
       </tr>`;
     }).join('')}</tbody></table>`;
+  }
+
+  function renderExtraTargets(data) {
+    const box = $('#atExtraList');
+    const label = $('#atExtraState');
+    if (!box || !label) return;
+    const extras = data.extra_targets || [];
+    const max = data.max_extra_targets || 5;
+    label.textContent = extras.length
+      ? `Отслеживается параллельно: ${extras.length} из ${max}`
+      : 'Дополнительных адресов нет — движок следит только за целью.';
+    if (!extras.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<table><thead><tr><th>Дополнительный адрес</th><th></th></tr></thead><tbody>${extras.map((address) => `<tr>
+      <td class="mono">${esc(address)}</td>
+      <td><button type="button" class="pair" data-remove-target="${esc(address)}">Убрать</button></td>
+    </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('[data-remove-target]').forEach((button) => {
+      button.onclick = async () => {
+        button.disabled = true;
+        try { await api('/api/autotrade/target/remove', jsonPost({ address: button.dataset.removeTarget })); refreshStatus(); }
+        catch (error) { button.disabled = false; window.alert(error.message); }
+      };
+    });
+  }
+
+  async function addExtraTarget() {
+    const input = $('#atExtraTarget');
+    const address = input.value.trim();
+    if (!address) return;
+    try {
+      await api('/api/autotrade/target/add', jsonPost({ address }));
+      input.value = '';
+      refreshStatus();
+    } catch (error) { window.alert('Не удалось добавить: ' + error.message); }
   }
 
   function renderSavedOnly(data) {
@@ -679,6 +722,12 @@
     $('#atStop').onclick = stopAuto;
     $('#atSetTarget').onclick = () => setTarget($('#atTarget').value.trim());
     $('#atClearTarget').onclick = () => { $('#atTarget').value = ''; setTarget(null); };
+    $('#atAddTarget').onclick = addExtraTarget;
+    $('#atExtraTarget').onkeydown = (event) => { if (event.key === 'Enter') addExtraTarget(); };
+    // 1% / 5% / 10% presets: fill the field, the operator still presses Save.
+    document.querySelectorAll('[data-dev]').forEach((button) => {
+      button.onclick = () => { $('#setDeviation').value = button.dataset.dev; $('#atSettingsMessage').textContent = `Порог ${button.dataset.dev}% — нажмите «Сохранить настройки»`; };
+    });
     $('#atSaveSettings').onclick = saveSettings;
     $('#manAnalyze').onclick = manualAnalyze;
     $('#atRefreshLog').onclick = refreshLog;
