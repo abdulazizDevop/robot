@@ -196,7 +196,10 @@
   const markRepeatedAddresses=()=>document.querySelectorAll('#eventsBody [data-address]').forEach(button=>{const row=button.closest('tr');const repeated=[...(row?.querySelectorAll('.badge.watch')||[])].some(x=>/^×\d+/.test(x.textContent.trim())&&Number(x.textContent.trim().slice(1))>1);if(repeated){button.style.border='1px solid var(--red)';button.style.borderRadius='3px';button.style.padding='1px 4px';button.style.color='var(--red)'}});
   const refresh=()=>{replaceUnknowns(document.body);hideUnknownPortfolioRows();markRepeatedAddresses()};
   refresh();
-  new MutationObserver(refresh).observe(document.body,{childList:true,subtree:true,characterData:true});
+  // Coalesced: live trades change the DOM many times a second, and a pass over
+  // the whole page on every change froze the tab (blank page on iPhone).
+  let refreshTimer=0; const scheduleRefresh=()=>{if(refreshTimer)return;refreshTimer=setTimeout(()=>{refreshTimer=0;refresh()},250)};
+  new MutationObserver(scheduleRefresh).observe(document.body,{childList:true,subtree:true,characterData:true});
 })();
 </script>
 <script>
@@ -211,7 +214,8 @@
 (() => {
   const cleanUnknownCells=()=>document.querySelectorAll('#eventsBody td').forEach(cell=>{if(cell.textContent.trim()==='—'){cell.textContent='';cell.setAttribute('aria-label','Нет данных');}});
   cleanUnknownCells();
-  new MutationObserver(cleanUnknownCells).observe(document.getElementById('eventsBody'),{childList:true,subtree:true,characterData:true});
+  let cleanTimer=0;
+  new MutationObserver(()=>{if(cleanTimer)return;cleanTimer=setTimeout(()=>{cleanTimer=0;cleanUnknownCells()},250)}).observe(document.getElementById('eventsBody'),{childList:true,subtree:true,characterData:true});
 })();
 </script>
 <script>
@@ -225,9 +229,9 @@
 (() => {
   const addMax=()=>{
     const specs=[['walletList','maxWallet','Самый большой объём адреса'],['bestTradesList','maxTrade','Самая большая позиция']];
-    specs.forEach(([id,marker,label])=>{const list=document.getElementById(id);if(!list)return;let box=document.getElementById(marker);if(!box){box=document.createElement('div');box.id=marker;box.className='autotrade-note';box.style.cssText='padding:8px 16px;border-bottom:1px solid var(--line);color:var(--amber);font-size:12px;font-weight:700';list.parentElement.insertBefore(box,list)};const amounts=[...list.querySelectorAll('.wallet-amount,.trade-usd')].map(x=>x.textContent.trim()).filter(Boolean);if(amounts.length)box.textContent=label+': '+amounts[0]});
+    specs.forEach(([id,marker,label])=>{const list=document.getElementById(id);if(!list)return;let box=document.getElementById(marker);if(!box){box=document.createElement('div');box.id=marker;box.className='autotrade-note';box.style.cssText='padding:8px 16px;border-bottom:1px solid var(--line);color:var(--amber);font-size:12px;font-weight:700';list.parentElement.insertBefore(box,list)};const amounts=[...list.querySelectorAll('.wallet-amount,.trade-usd')].map(x=>x.textContent.trim()).filter(Boolean);if(amounts.length&&box.textContent!==label+': '+amounts[0])box.textContent=label+': '+amounts[0]});
   };
-  addMax();new MutationObserver(addMax).observe(document.body,{childList:true,subtree:true});
+  addMax();let maxTimer=0;new MutationObserver(()=>{if(maxTimer)return;maxTimer=setTimeout(()=>{maxTimer=0;addMax()},250)}).observe(document.body,{childList:true,subtree:true});
 })();
 </script>
 <script>
