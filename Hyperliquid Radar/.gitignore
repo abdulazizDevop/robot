@@ -1,0 +1,7 @@
+# Runtime state: Bybit keys, journal, internal token, push keys, exports
+data/
+push-data/
+exports/
+node_modules/
+.npm/
+package-lock.json

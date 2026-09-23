@@ -7,10 +7,19 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmo
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 apt-get update
 apt-get install -y caddy
-cat >/etc/caddy/Caddyfile <<'EOF'
-144-31-223-144.sslip.io {
-    reverse_proxy /push/* 127.0.0.1:8766
+IP="${IP:-$(curl -fsS https://api.ipify.org)}"
+HOST="${DOMAIN:-${IP//./-}.sslip.io}"
+# Everything goes through server.py, which checks the login before it proxies
+# /push/* to the push service. The bare IP only has Caddy's self-signed
+# certificate, so it redirects to the name that has a real one.
+cat >/etc/caddy/Caddyfile <<EOF
+${HOST} {
+    encode gzip
     reverse_proxy 127.0.0.1:8765
+}
+http://${IP}, https://${IP} {
+    tls internal
+    redir https://${HOST}{uri} permanent
 }
 EOF
 ufw allow 80/tcp || true
