@@ -190,6 +190,47 @@ confirmed 5 wallets in its entire lifetime. The productive path is the saved
 address list, which works well: `open-pnl-leaders` returns a leader holding
 $570,801 in unrealised PnL from the 53 saved wallets.
 
+## If the server disappears
+
+It happened on 2026-09-23. The VPS had been up 15 days the previous morning;
+24 hours later SSH was refused, ports 80 and 4174 were dropped, and 443 was
+answering with an Akamai edge page behind an Oracle certificate. `whois` still
+said Timeweb, `traceroute` still ended at the IP — the address had simply been
+handed to someone else. Nothing in the app can cause that; check the hosting
+panel first (balance, VPS state, IP).
+
+What that costs, and what it does not:
+
+| | |
+|---|---|
+| Code, docs, deploy scripts | in git — nothing lost |
+| Exchange keys, panel password | in `.env` only — re-enter on rebuild |
+| `trading_settings.json` | lost — `deploy/seed/trading_settings.json` is the last known good set |
+| `saved_addresses.json` | lost — `deploy/seed/saved_addresses.json` is a merged copy (112) |
+| Order/decision history | lost — audit only; the one live fill is recorded above |
+| Radar cache, market cache | lost — rebuilds itself within minutes |
+| Let's Encrypt certificate | lost — `setup-tls.sh` issues a new one for the new name |
+
+First thing, before anything else: **check the exchange for open positions**.
+The engine cannot close what it can no longer see. That morning there were
+none, because the trader was idle; had it been following, a copied position
+would have been sitting on Bybit with nothing managing it.
+
+Rebuild on a fresh Ubuntu 24.04 box:
+
+```bash
+rsync -az --exclude data --exclude .env app/ root@NEW_IP:/opt/liquidation-radar/
+ssh root@NEW_IP 'RADAR_PASSWORD=… BYBIT_API_KEY=… BYBIT_API_SECRET=… \
+                 bash /opt/liquidation-radar/deploy/restore.sh'
+```
+
+`restore.sh` hardens the host, installs Docker, writes `.env`, seeds settings
+and addresses, builds, starts, and issues TLS. It seeds **dry-run** regardless
+of what the old server ran; switch to live from the panel after watching it,
+not by default on a rebuild. Then restrict the Bybit key to the new IP — the
+old key allowed any IP, which is the only reason a rebuild elsewhere works at
+all, and also the reason it should be rotated afterwards.
+
 ## What is still not automatic
 
 - **No take-profit / stop-loss on our own PnL.** Positions close when the
