@@ -1,0 +1,4 @@
+# Replace radar.example.com with your domain and point its DNS A record to the VPS.
+radar.example.com {
+    reverse_proxy 127.0.0.1:8765
+}

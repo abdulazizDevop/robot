@@ -1,0 +1,9 @@
+{
+  "name": "hyperliquid-radar-push",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0"
+  }
+}

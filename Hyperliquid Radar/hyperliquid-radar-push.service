@@ -1,0 +1,20 @@
+[Unit]
+Description=Hyperliquid Radar background push listener
+After=network-online.target hyperliquid-radar.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hyperliquid-radar
+ExecStart=/usr/bin/node /opt/hyperliquid-radar/push-server.js
+Restart=always
+RestartSec=3
+User=radar
+Group=radar
+NoNewPrivileges=true
+PrivateTmp=true
+Environment=RADAR_PUSH_PORT=8766
+Environment=VAPID_SUBJECT=mailto:radar@localhost
+
+[Install]
+WantedBy=multi-user.target
