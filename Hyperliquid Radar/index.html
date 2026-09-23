@@ -230,5 +230,59 @@
   addMax();new MutationObserver(addMax).observe(document.body,{childList:true,subtree:true});
 })();
 </script>
+<script>
+// Positions opened in the last 20 minutes that the address still holds.
+// Openings come from the exact userFills stream of the watchlist; each
+// candidate is confirmed against Hyperliquid clearinghouseState every 30 s,
+// so a position that has been closed disappears. Closed positions are not shown.
+(() => {
+  const WINDOW=20*60*1000, POLL=30*1000, FRESH=90*1000, MAX_CHECK=20;
+  const grid=document.querySelector('.bottom-grid'); if(!grid)return;
+  const section=document.createElement('section'); section.className='panel'; section.style.gridColumn='1 / -1';
+  section.innerHTML='<div class="panel-head"><div><div class="panel-title">Открытые позиции за последние 20 минут</div><div class="panel-sub">только открытия, которые адрес ещё держит · МСК · проверка каждые 30 с</div></div><span class="badge watch" id="recentOpenCount">0</span></div><div class="scroll-list" id="recentOpenList"></div>';
+  grid.prepend(section);
+  const live=Object.create(null); let checking=false;
+  function openings(){
+    const cutoff=Date.now()-WINDOW, groups=new Map();
+    state.events.filter(e=>e.source==='userFills'&&e.action===ACTION_OPEN&&['LONG','SHORT'].includes(e.position)&&(Number(e.time)||0)>=cutoff).forEach(e=>{
+      const address=String(e.address||'').toLowerCase(), key=address+'|'+e.coin+'|'+e.position;
+      const g=groups.get(key)||{address,coin:String(e.coin),position:e.position,usd:0,sz:0,cost:0,first:Infinity,last:0,fills:0};
+      const sz=Math.abs(Number(e.sz)||0), px=Number(e.px)||0;
+      g.usd+=Number(e.usd)||0; g.sz+=sz; g.cost+=sz*px; g.fills++;
+      g.first=Math.min(g.first,Number(e.time)||0); g.last=Math.max(g.last,Number(e.time)||0);
+      groups.set(key,g);
+    });
+    return [...groups.values()];
+  }
+  function held(g){
+    const snap=live[g.address]; if(!snap||Date.now()-snap.at>FRESH)return null;
+    return snap.positions.find(p=>p.coin===g.coin&&p.side===g.position)||false;
+  }
+  async function check(){
+    if(checking)return; checking=true;
+    try{
+      const addresses=[...new Set(openings().sort((a,b)=>b.last-a.last).map(g=>g.address))].slice(0,MAX_CHECK);
+      for(const address of addresses){
+        try{
+          const data=await post({type:'clearinghouseState',user:address});
+          const positions=(data.assetPositions||[]).map(x=>x.position||{}).filter(p=>Number(p.szi)).map(p=>({coin:String(p.coin),side:Number(p.szi)>0?'LONG':'SHORT',size:Math.abs(Number(p.szi)),entryPx:Number(p.entryPx)||0,value:Math.abs(Number(p.positionValue)||0),pnl:Number(p.unrealizedPnl)||0}));
+          live[address]={at:Date.now(),positions};
+        }catch(error){log('20 минут: нет данных по '+short(address)+': '+error.message,'warn')}
+      }
+    }finally{checking=false;draw()}
+  }
+  function draw(){
+    const list=$('recentOpenList'), count=$('recentOpenCount'); if(!list)return;
+    const all=openings(), rows=all.map(g=>({...g,now:held(g)})).filter(g=>g.now).sort((a,b)=>b.last-a.last);
+    const pending=all.filter(g=>held(g)===null).length;
+    count.textContent=rows.length;
+    list.innerHTML=rows.length?rows.map(g=>'<div class="trade-row"><div class="trade-line"><div class="trade-main"><button class="address-link trade-address" data-address="'+esc(g.address)+'">'+short(g.address)+'</button><span class="badge '+(g.position==='LONG'?'buy':'sell')+'">'+g.position+'</span><b>'+esc(g.coin)+'</b></div><b class="trade-usd">'+fmtUsd(g.usd)+'</b></div><div class="trade-meta">Открыта '+time(g.first)+' МСК'+(g.fills>1?' · исполнений: '+g.fills+', последнее '+time(g.last):'')+' · цена входа $'+fmtNum(g.sz?g.cost/g.sz:0)+' · сейчас держит <span class="position-size">'+fmtNum(g.now.size)+'</span> ('+fmtUsd(g.now.value)+', PnL '+fmtUsd(g.now.pnl)+')</div></div>').join('')
+      :'<div class="empty"><strong>'+(pending?'Проверяю '+pending+' открыти'+(pending===1?'е':'я')+'…':'Нет открытых позиций за 20 минут')+'</strong><span>Берутся точные открытия адресов из watchlist, пока идёт анализ.</span></div>';
+    list.querySelectorAll('[data-address]').forEach(b=>b.onclick=()=>openPortfolio(b.dataset.address));
+  }
+  draw(); check(); setInterval(check,POLL);
+  let seen=0; setInterval(()=>{const n=openings().filter(g=>!live[g.address]).length; if(n&&n!==seen)check(); seen=n; draw()},3000);
+})();
+</script>
 </body>
 </html>
