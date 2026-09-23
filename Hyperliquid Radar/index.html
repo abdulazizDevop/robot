@@ -37,7 +37,12 @@
   .closed-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
   .closed-total{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);font-size:12px;color:#9bb5ae}
   .closed-total b{font-size:15px}
-  #closedPanel .table th{padding:10px 13px}
+  #closedPanel .table th,#pnlPanel .table th{padding:10px 13px}
+  .pnl-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .pnl-kpi{border:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:11px;color:#9bb5ae;text-transform:uppercase;letter-spacing:.06em}
+  .pnl-kpi b{font-size:18px;letter-spacing:0;text-transform:none}
+  .pnl-kpi.total{border-color:#35555c}
+  @media (max-width:650px){.pnl-kpis{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -353,6 +358,7 @@
   section.addEventListener('click',ev=>{const b=ev.target.closest('[data-save-closed]'); if(!b)return; ev.preventDefault(); addWatch(b.dataset.saveClosed); draw()});
   $('closedSaveAll').onclick=()=>{const todo=[...new Set(groups().map(g=>g.address))].filter(a=>!state.manualAddresses.includes(a)); todo.forEach(a=>addWatch(a)); draw(); toast('Адреса сохранены',todo.length?'Добавлено в watchlist: '+todo.length:'Все адреса уже сохранены','buy')};
   $('closedClear').onclick=()=>{fills=[];seen.clear();try{localStorage.removeItem(KEY)}catch{};draw()};
+  window.closedPnlByAddress=()=>{const out={};groups().forEach(g=>{if(g.hasPnl)out[g.address]=(out[g.address]||0)+g.pnl});return out};
 })();
 
 // Entry price in the address portfolio ("Активы и позиции"), taken from
@@ -383,6 +389,46 @@
   }
   const baseOpen=openPortfolio;
   openPortfolio=function(address){baseOpen(address);const a=String(address||'').toLowerCase();if(state.portfolioAddress===a)enrich(a)};
+})();
+</script>
+<script>
+// Total PnL of the watchlist: unrealised PnL of every open position (asked
+// from Hyperliquid every 60 s), the closed PnL kept in «Закрытые позиции»,
+// and their sum, in total and per address.
+(() => {
+  const POLL=60*1000, WORKERS=3;
+  const closed=document.getElementById('closedPanel'); if(!closed)return;
+  const section=document.createElement('section'); section.className='panel'; section.id='pnlPanel'; section.style.marginTop='14px';
+  section.innerHTML='<div class="panel-head closed-head"><div><div class="panel-title">Общий PnL</div><div class="panel-sub" id="pnlSub">адреса из watchlist · открытые позиции по данным Hyperliquid · обновление каждые 60 с</div></div><div class="closed-actions"><button class="btn small" id="pnlRefresh">Обновить</button><span class="badge watch" id="pnlCount">0</span></div></div>'
+    +'<div class="pnl-kpis" id="pnlKpis"></div>'
+    +'<div class="table-wrap" style="max-height:360px"><table class="table"><thead><tr><th>Адрес</th><th>Открытых позиций</th><th>Открытый PnL</th><th>Закрытый PnL</th><th>Итого</th></tr></thead><tbody id="pnlBody"></tbody></table>'
+    +'<div class="empty" id="pnlEmpty"><strong>Добавьте адреса в watchlist</strong><span>PnL считается по сохранённым адресам.</span></div></div>';
+  closed.after(section);
+  const snaps=Object.create(null), tried=Object.create(null); let running=false, updatedAt=0;
+  const money=v=>(v>0?'+':v<0?'−':'')+fmtUsd(Math.abs(v));
+  const color=v=>v>0?'var(--green)':v<0?'var(--red)':'inherit';
+  async function refresh(){
+    if(running)return; running=true;
+    const addresses=state.manualAddresses.slice(0,100);
+    Object.keys(snaps).forEach(a=>{if(!addresses.includes(a))delete snaps[a]});
+    let next=0;
+    const worker=async()=>{while(next<addresses.length){const address=addresses[next++];tried[address]=Date.now();try{const d=await post({type:'clearinghouseState',user:address});const positions=(d.assetPositions||[]).map(x=>x.position||{}).filter(p=>Number(p.szi));snaps[address]={count:positions.length,pnl:positions.reduce((s,p)=>s+(Number(p.unrealizedPnl)||0),0),at:Date.now()}}catch(error){log('Общий PnL: нет данных по '+short(address)+': '+error.message,'warn')}}};
+    try{await Promise.all(Array.from({length:Math.min(WORKERS,addresses.length)},worker));updatedAt=Date.now()}finally{running=false;draw()}
+  }
+  function draw(){
+    const closedBy=typeof window.closedPnlByAddress==='function'?window.closedPnlByAddress():{};
+    const addresses=[...new Set([...state.manualAddresses,...Object.keys(closedBy)])];
+    const rows=addresses.map(address=>{const s=snaps[address],c=closedBy[address]||0;return {address,count:s?s.count:null,open:s?s.pnl:0,closed:c,total:(s?s.pnl:0)+c,known:!!s}}).filter(r=>r.known||r.closed).sort((a,b)=>Math.abs(b.total)-Math.abs(a.total));
+    const open=rows.reduce((s,r)=>s+r.open,0), closedSum=rows.reduce((s,r)=>s+r.closed,0), positions=rows.reduce((s,r)=>s+(r.count||0),0);
+    $('pnlCount').textContent=rows.length;
+    $('pnlEmpty').style.display=rows.length?'none':'block';
+    $('pnlKpis').innerHTML='<div class="pnl-kpi"><span>Открытые позиции · '+positions+'</span><b style="color:'+color(open)+'">'+money(open)+'</b></div><div class="pnl-kpi"><span>Закрытые позиции</span><b style="color:'+color(closedSum)+'">'+money(closedSum)+'</b></div><div class="pnl-kpi total"><span>Общий PnL</span><b style="color:'+color(open+closedSum)+'">'+money(open+closedSum)+'</b></div>';
+    $('pnlBody').innerHTML=rows.map(r=>'<tr><td><button class="address-link" data-address="'+esc(r.address)+'" title="Открыть портфель">'+short(r.address)+'</button></td><td class="mono">'+(r.count===null?'':r.count)+'</td><td class="mono" style="color:'+color(r.open)+'">'+(r.known?money(r.open):'')+'</td><td class="mono" style="color:'+color(r.closed)+'">'+(r.closed?money(r.closed):'')+'</td><td class="mono" style="color:'+color(r.total)+'"><b>'+money(r.total)+'</b></td></tr>').join('');
+    $('pnlSub').textContent='адреса из watchlist · открытые позиции по данным Hyperliquid · обновление каждые 60 с'+(updatedAt?' · обновлено '+time(updatedAt)+' МСК':'');
+  }
+  $('pnlRefresh').onclick=()=>refresh();
+  // A newly saved address is picked up within seconds, not at the next 60 s round.
+  draw(); refresh(); setInterval(refresh,POLL); setInterval(()=>{if(state.manualAddresses.some(a=>!snaps[a]&&!(tried[a]>Date.now()-POLL)))refresh(); draw()},5000);
 })();
 </script>
 </body>
