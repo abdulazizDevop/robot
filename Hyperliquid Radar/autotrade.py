@@ -62,6 +62,18 @@ DEBOUNCE_SECONDS = float(os.environ.get("AUTOTRADE_DEBOUNCE", "0.9"))
 MAX_FILL_AGE_MS = 120_000
 REPEAT_GUARD_SECONDS = 10.0
 MIN_OPPOSITE_PNL = Decimal("10")
+# Limit execution (the default since 2026-09-23: market orders cost the client
+# taker fees and slippage). A post-only order rests at the best price of our
+# side of the book and follows it; what is left after the maker window is
+# taken with an IOC limit at the current best price, never deeper.
+ORDER_TYPES = ("Limit", "Market")
+LIMIT_OPEN_SECONDS = float(os.environ.get("AUTOTRADE_OPEN_SECONDS", "15"))
+LIMIT_CLOSE_SECONDS = float(os.environ.get("AUTOTRADE_CLOSE_SECONDS", "8"))
+LIMIT_POLL_SECONDS = float(os.environ.get("AUTOTRADE_POLL_SECONDS", "1"))
+# An entry is abandoned when the price ran further than this from where we
+# started; an exit is always completed.
+LIMIT_MAX_DRIFT_PCT = Decimal(os.environ.get("AUTOTRADE_MAX_DRIFT_PCT", "0.5"))
+TERMINAL = {"Filled", "Cancelled", "Rejected", "PartiallyFilledCanceled", "Deactivated"}
 MSK = timezone(timedelta(hours=3))
 
 _CONFIG_LOCK = threading.Lock()
@@ -135,8 +147,14 @@ def status() -> dict:
         equityPercent=float(cfg.get("equityPercent") or 0),
         leverage=int(cfg.get("leverage") or 0),
         apiKeyMask=_key_mask(cfg),
+        orderType=_order_type(cfg),
     )
     return out
+
+
+def _order_type(cfg: dict) -> str:
+    value = str(cfg.get("orderType") or "Limit")
+    return value if value in ORDER_TYPES else "Limit"
 
 
 def save_config(data: dict) -> dict:
@@ -170,6 +188,9 @@ def save_config(data: dict) -> dict:
             raise AutoTradeError("Введите Bybit API Key и API Secret.")
         api_key, api_secret = old["apiKey"], old["apiSecret"]
     enabled = bool(data.get("enabled"))
+    order_type = str(data.get("orderType") or old.get("orderType") or "Limit")
+    if order_type not in ORDER_TYPES:
+        raise AutoTradeError("Тип ордера: Limit или Market.")
     cfg = {
         "apiKey": api_key,
         "apiSecret": api_secret,
@@ -177,6 +198,7 @@ def save_config(data: dict) -> dict:
         "addresses": addresses,
         "equityPercent": equity,
         "leverage": leverage,
+        "orderType": order_type,
         "enabled": enabled,
         "updatedAt": int(time.time() * 1000),
     }
@@ -185,11 +207,12 @@ def save_config(data: dict) -> dict:
     was = bool(old.get("enabled"))
     if enabled != was:
         text = ("▶️ <b>Автоторговля включена</b>" if enabled else "⏹ <b>Автоторговля выключена</b>")
-        detail = f"{', '.join(notify.short(a) for a in addresses)} · {equity:g}% депозита · {leverage}x"
+        kind = "лимит" if order_type == "Limit" else "рыночные"
+        detail = f"{', '.join(notify.short(a) for a in addresses)} · {equity:g}% депозита · {leverage}x · {kind}"
         journal("config", ("Включена: " if enabled else "Выключена: ") + detail)
         notify.send(f"{text}\n{detail}", dedupe_key=f"toggle:{enabled}:{cfg['updatedAt']}")
     else:
-        journal("config", f"Настройки сохранены: {len(addresses)} адрес(а) · {equity:g}% · {leverage}x")
+        journal("config", f"Настройки сохранены: {len(addresses)} адрес(а) · {equity:g}% · {leverage}x · {order_type}")
     return status()
 
 
@@ -341,12 +364,162 @@ def _order(body: dict, cfg: dict) -> dict:
         raise
 
 
+def _link() -> str:
+    return "hlr" + secrets.token_hex(9)
+
+
+def _book(symbol: str) -> tuple[Decimal, Decimal]:
+    data = _public("/v5/market/orderbook", "category=linear&symbol=" + urllib.parse.quote(symbol) + "&limit=1")
+    result = data.get("result") or {}
+    bid = _dec(result["b"][0][0]) if result.get("b") else Decimal(0)
+    ask = _dec(result["a"][0][0]) if result.get("a") else Decimal(0)
+    if bid <= 0 or ask <= 0:
+        raise AutoTradeError(f"Нет стакана {symbol} на Bybit.")
+    return bid, ask
+
+
+def _query(symbol: str, link: str, cfg: dict) -> dict:
+    query = f"category=linear&symbol={urllib.parse.quote(symbol)}&orderLinkId={link}"
+    for path in ("/v5/order/realtime", "/v5/order/history"):
+        items = bybit("GET", path, query, cfg).get("list") or []
+        if items:
+            return items[0]
+    return {}
+
+
+def _settle(symbol: str, link: str, cfg: dict, cancel: bool) -> dict:
+    """Cancel (if asked) and wait for the order's final state."""
+    if cancel:
+        try:
+            bybit("POST", "/v5/order/cancel", {"category": "linear", "symbol": symbol, "orderLinkId": link}, cfg)
+        except BybitError as error:
+            if error.code not in (110001, 170213):  # already filled or cancelled
+                raise
+    order: dict = {}
+    for _ in range(10):
+        order = _query(symbol, link, cfg)
+        if order.get("orderStatus") in TERMINAL:
+            break
+        time.sleep(0.3)
+    return order
+
+
+class _Fills:
+    def __init__(self) -> None:
+        self.qty = Decimal(0)
+        self.cost = Decimal(0)
+        self.maker = Decimal(0)
+        self.taker = Decimal(0)
+
+    def add(self, order: dict, maker: bool) -> None:
+        qty = _dec(order.get("cumExecQty"))
+        if qty <= 0:
+            return
+        self.qty += qty
+        self.cost += qty * _dec(order.get("avgPrice") or order.get("price"))
+        if maker:
+            self.maker += qty
+        else:
+            self.taker += qty
+
+    @property
+    def avg(self) -> Decimal:
+        return self.cost / self.qty if self.qty else Decimal(0)
+
+
+def _drift(side: str, reference: Decimal, price: Decimal) -> Decimal:
+    """How far the price moved against us, in percent."""
+    moved = (price - reference) if side == "Buy" else (reference - price)
+    return moved / reference * 100
+
+
+def execute_limit(symbol: str, side: str, qty: Decimal, cfg: dict, position_idx: int,
+                  reduce_only: bool, maker_seconds: float, max_drift: Decimal | None) -> dict:
+    """Post-only at our side's best price, following it; then IOC at the other side's best."""
+    fills = _Fills()
+    bid, ask = _book(symbol)
+    reference = bid if side == "Buy" else ask
+    remaining = qty
+    resting: tuple[str, Decimal] | None = None
+    drifted: Decimal | None = None
+    base = {"category": "linear", "symbol": symbol, "side": side, "orderType": "Limit",
+            "positionIdx": position_idx}
+    if reduce_only:
+        base["reduceOnly"] = True
+    deadline = time.monotonic() + maker_seconds
+    while remaining > 0 and time.monotonic() < deadline:
+        bid, ask = _book(symbol)
+        best = bid if side == "Buy" else ask
+        if max_drift is not None and _drift(side, reference, best) > max_drift:
+            drifted = _drift(side, reference, best)
+            break
+        if resting and ((side == "Buy" and best > resting[1]) or (side == "Sell" and best < resting[1])):
+            # Someone improved on our price: take the order down and follow.
+            fills.add(_settle(symbol, resting[0], cfg, cancel=True), maker=True)
+            remaining, resting = qty - fills.qty, None
+            continue
+        if resting is None:
+            link = _link()
+            _order(dict(base, qty=_fmt(remaining), price=_fmt(best), timeInForce="PostOnly", orderLinkId=link), cfg)
+            resting = (link, best)
+        time.sleep(LIMIT_POLL_SECONDS)
+        state = _query(symbol, resting[0], cfg)
+        if state.get("orderStatus") in TERMINAL:
+            # Filled, or a post-only order the exchange refused because the
+            # book moved into it: count what filled and place again.
+            fills.add(state, maker=True)
+            remaining, resting = qty - fills.qty, None
+    if resting:
+        fills.add(_settle(symbol, resting[0], cfg, cancel=True), maker=True)
+        remaining = qty - fills.qty
+    if remaining > 0 and drifted is None:
+        bid, ask = _book(symbol)
+        price = ask if side == "Buy" else bid
+        if max_drift is not None and _drift(side, reference, price) > max_drift:
+            drifted = _drift(side, reference, price)
+        else:
+            link = _link()
+            _order(dict(base, qty=_fmt(remaining), price=_fmt(price), timeInForce="IOC", orderLinkId=link), cfg)
+            fills.add(_settle(symbol, link, cfg, cancel=False), maker=False)
+            remaining = qty - fills.qty
+    return {"filled": fills.qty, "avg": fills.avg, "maker": fills.maker, "taker": fills.taker,
+            "remaining": remaining, "drift": drifted, "reference": reference}
+
+
+def _leg_size(symbol: str, side: str, cfg: dict) -> Decimal:
+    positions = bybit("GET", "/v5/position/list", "category=linear&symbol=" + urllib.parse.quote(symbol), cfg)
+    for item in positions.get("list") or []:
+        if item.get("side") == side:
+            return _dec(item.get("size"))
+    return Decimal(0)
+
+
 def _close(symbol: str, position: dict, cfg: dict) -> dict:
     close_side = "Sell" if position.get("side") == "Buy" else "Buy"
-    body = {"category": "linear", "symbol": symbol, "side": close_side, "orderType": "Market",
-            "qty": str(position.get("size")), "reduceOnly": True,
-            "positionIdx": 1 if position.get("side") == "Buy" else 2}
-    return _order(body, cfg)
+    idx = 1 if position.get("side") == "Buy" else 2
+    size = _dec(position.get("size"))
+    market = {"category": "linear", "symbol": symbol, "side": close_side, "orderType": "Market",
+              "reduceOnly": True, "positionIdx": idx}
+    if _order_type(cfg) == "Market":
+        _order(dict(market, qty=str(position.get("size"))), cfg)
+        return {"qty": size, "market": size, "avg": Decimal(0), "maker": Decimal(0)}
+    done = execute_limit(symbol, close_side, size, cfg, idx, True, LIMIT_CLOSE_SECONDS, None)
+    # An exit must complete: whatever the book did not take goes at market.
+    left = _leg_size(symbol, position.get("side"), cfg)
+    if left > 0:
+        _order(dict(market, qty=_fmt(left)), cfg)
+    return {"qty": size, "market": left, "avg": done["avg"], "maker": done["maker"]}
+
+
+def _close_note(done: dict) -> str:
+    parts = []
+    if done.get("maker"):
+        parts.append(f"лимит {_fmt(done['maker'])}")
+    if done.get("market"):
+        parts.append(f"по рынку {_fmt(done['market'])}")
+    if done.get("avg"):
+        parts.append(f"ср. цена {_fmt(done['avg'])}")
+    return " · ".join(parts)
 
 
 def _side_name(side: str) -> str:
@@ -388,11 +561,11 @@ def _signal_locked(data: dict) -> dict:
     if side == "":
         if current is None:
             return {"ok": True, "skipped": "На Bybit нет позиции", "symbol": symbol}
-        _close(symbol, current, cfg)
+        done = _close(symbol, current, cfg)
         _RECENT_ACTION[symbol] = ("close", time.monotonic())
         return {"ok": True, "action": f"Закрыта {_side_name(current['side'])} {symbol} после закрытия лидером",
                 "symbol": symbol, "closed": current.get("side"), "qty": str(current.get("size")),
-                "pnl": str(current.get("unrealisedPnl") or "")}
+                "pnl": str(current.get("unrealisedPnl") or ""), "how": _close_note(done)}
 
     if current is not None and current.get("side") == side:
         return {"ok": True, "skipped": "Такая позиция уже открыта", "symbol": symbol}
@@ -402,7 +575,7 @@ def _signal_locked(data: dict) -> dict:
         if pnl < MIN_OPPOSITE_PNL:
             return {"ok": True, "skipped": f"Противоположный сигнал пропущен: PnL {_fmt(pnl)} меньше $10",
                     "symbol": symbol}
-        _close(symbol, current, cfg)
+        reversed_note = _close_note(_close(symbol, current, cfg))
         reversed_from = current
 
     try:
@@ -415,9 +588,14 @@ def _signal_locked(data: dict) -> dict:
     wallet = bybit("GET", "/v5/account/wallet-balance", "accountType=UNIFIED", cfg)
     accounts = wallet.get("list") or []
     available = _dec(accounts[0].get("totalAvailableBalance")) if accounts else Decimal(0)
-    ticker = _public("/v5/market/tickers", query)
-    tickers = (ticker.get("result") or {}).get("list") or []
-    price = _dec(tickers[0].get("lastPrice")) if tickers else Decimal(0)
+    limit = _order_type(cfg) == "Limit"
+    if limit:
+        bid, ask = _book(symbol)
+        price = bid if side == "Buy" else ask
+    else:
+        ticker = _public("/v5/market/tickers", query)
+        tickers = (ticker.get("result") or {}).get("list") or []
+        price = _dec(tickers[0].get("lastPrice")) if tickers else Decimal(0)
     if price <= 0:
         raise AutoTradeError(f"Нет цены {symbol} на Bybit.")
     lot = instrument.get("lotSizeFilter") or {}
@@ -437,17 +615,45 @@ def _signal_locked(data: dict) -> dict:
         raise AutoTradeError(
             f"Объём {_fmt(qty)} {symbol} (~${_fmt((qty * price).quantize(Decimal('0.01')))}) меньше минимума Bybit "
             f"({_fmt(min_qty)} / ${_fmt(min_notional)}). Увеличьте процент депозита или плечо.")
-    order = {"category": "linear", "symbol": symbol, "side": side, "orderType": "Market",
-             "qty": _fmt(qty), "positionIdx": 1 if side == "Buy" else 2,
-             "orderLinkId": "hlr" + secrets.token_hex(9)}
-    result = _order(order, cfg)
+    idx = 1 if side == "Buy" else 2
+    how = "рыночный"
+    order_id = None
+    if limit:
+        done = execute_limit(symbol, side, qty, cfg, idx, False, LIMIT_OPEN_SECONDS, LIMIT_MAX_DRIFT_PCT)
+        if done["filled"] <= 0:
+            reason = (f"цена ушла на {done['drift']:.2f}% (допуск {LIMIT_MAX_DRIFT_PCT}%)" if done["drift"] is not None
+                      else f"за {LIMIT_OPEN_SECONDS:g} с никто не продал/купил по нашей цене")
+            text = f"Лимитный ордер {_side_name(side)} {symbol} не исполнился: {reason}"
+            if reversed_from is not None:
+                return {"ok": True, "action": f"Закрыта {_side_name(reversed_from['side'])} {symbol} ({reversed_note}); {text}",
+                        "symbol": symbol, "closed": reversed_from.get("side"), "qty": str(reversed_from.get("size")),
+                        "pnl": str(reversed_from.get("unrealisedPnl") or "")}
+            return {"ok": True, "skipped": text, "symbol": symbol}
+        filled, price = done["filled"], done["avg"]
+        parts = []
+        if done["maker"]:
+            parts.append(f"лимит {_fmt(done['maker'])}")
+        if done["taker"]:
+            parts.append(f"по текущей цене {_fmt(done['taker'])}")
+        how = " + ".join(parts)
+        if done["remaining"] > 0:
+            how += f" · не добрано {_fmt(done['remaining'])}"
+            if done["drift"] is not None:
+                how += f" (цена ушла на {done['drift']:.2f}%)"
+    else:
+        order = {"category": "linear", "symbol": symbol, "side": side, "orderType": "Market",
+                 "qty": _fmt(qty), "positionIdx": idx, "orderLinkId": _link()}
+        order_id = _order(order, cfg).get("orderId")
+        filled = qty
     _RECENT_ACTION[symbol] = (side, time.monotonic())
     text = f"Открыта {_side_name(side)} {symbol}"
     if reversed_from is not None:
-        text = f"Закрыта {_side_name(reversed_from['side'])} (PnL {reversed_from.get('unrealisedPnl')}) и открыта {_side_name(side)} {symbol}"
-    return {"ok": True, "action": text, "orderId": result.get("orderId"), "qty": _fmt(qty),
-            "symbol": symbol, "side": side, "price": _fmt(price),
-            "usd": _fmt((qty * price).quantize(Decimal("0.01"))), "leverage": int(cfg["leverage"])}
+        text = (f"Закрыта {_side_name(reversed_from['side'])} (PnL {reversed_from.get('unrealisedPnl')}) "
+                f"и открыта {_side_name(side)} {symbol}")
+    return {"ok": True, "action": text, "orderId": order_id, "qty": _fmt(filled),
+            "symbol": symbol, "side": side, "price": _fmt(price.quantize(Decimal("0.00000001"))),
+            "usd": _fmt((filled * price).quantize(Decimal("0.01"))), "leverage": int(cfg["leverage"]),
+            "how": how}
 
 
 def report(source: str, data: dict, out: dict | None, error: Exception | None = None) -> None:
@@ -464,16 +670,17 @@ def report(source: str, data: dict, out: dict | None, error: Exception | None = 
     if out.get("action"):
         journal("trade", out["action"], address=leader, coin=coin, symbol=symbol, source=source,
                 qty=out.get("qty"), usd=out.get("usd"))
+        how = f"\n{out['how']}" if out.get("how") else ""
         if out.get("closed"):
-            body = f"⚪ <b>Bybit: {out['action']}</b>\nqty {out.get('qty')} · PnL {out.get('pnl') or '—'}\n{who}"
+            body = f"⚪ <b>Bybit: {out['action']}</b>\nqty {out.get('qty')} · PnL {out.get('pnl') or '—'}{how}\n{who}"
         else:
             body = (f"🟢 <b>Bybit: {out['action']}</b>\nqty {out.get('qty')} · ~${out.get('usd')} · "
-                    f"{out.get('leverage')}x · цена {out.get('price')}\n{who}")
+                    f"{out.get('leverage')}x · цена {out.get('price')}{how}\n{who}")
         notify.send(body, dedupe_key=f"trade:{out.get('orderId') or out['action']}:{time.time():.0f}")
     elif out.get("skipped"):
         journal("skip", out["skipped"], address=leader, coin=coin, symbol=symbol, source=source)
         text = out["skipped"]
-        if text.startswith("Пары ") or text.startswith("Противоположный"):
+        if text.startswith(("Пары ", "Противоположный", "Лимитный")):
             notify.send(f"⏸ <b>Автоторговля пропустила сигнал</b>\n{coin}: {text}\n{who}",
                         dedupe_key=f"skip:{symbol}:{text[:40]}")
 
@@ -705,6 +912,30 @@ def listener_sync(data: dict) -> dict:
     return {"ok": True, "leaders": leaders}
 
 
+def cancel_stale_orders() -> int:
+    """Cancel our own resting orders left behind by a restart mid-execution."""
+    cfg = load_config() or {}
+    if not (cfg.get("apiKey") and cfg.get("apiSecret")):
+        return 0
+    try:
+        items = bybit("GET", "/v5/order/realtime", "category=linear&settleCoin=USDT", cfg).get("list") or []
+    except AutoTradeError as error:
+        journal("error", f"Проверка висящих ордеров: {error}")
+        return 0
+    count = 0
+    for order in items:
+        link = str(order.get("orderLinkId") or "")
+        if link.startswith("hlr") and order.get("orderStatus") in ("New", "PartiallyFilled", "Untriggered"):
+            try:
+                bybit("POST", "/v5/order/cancel", {"category": "linear", "symbol": order["symbol"], "orderLinkId": link}, cfg)
+                count += 1
+            except AutoTradeError:
+                pass
+    if count:
+        journal("config", f"Отменено висящих ордеров после перезапуска: {count}")
+    return count
+
+
 def telegram_status_text() -> str:
     st = status()
     if not st.get("configured"):
@@ -713,7 +944,8 @@ def telegram_status_text() -> str:
     if st.get("addresses"):
         lines.append("Адреса: " + ", ".join(notify.short(a) for a in st["addresses"]))
     if st.get("equityPercent"):
-        lines.append(f"{st['equityPercent']:g}% депозита · {st.get('leverage')}x · ключ {st.get('apiKeyMask')}")
+        kind = "лимит" if st.get("orderType") == "Limit" else "рыночные"
+        lines.append(f"{st['equityPercent']:g}% депозита · {st.get('leverage')}x · {kind} · ключ {st.get('apiKeyMask')}")
     listener = st.get("listener") or {}
     lines.append("Сервер слушает Hyperliquid" if listener.get("connected") else "⚠️ Сервер не подключён к Hyperliquid")
     events = [e for e in st.get("events") or [] if e.get("kind") != "config"][:3]

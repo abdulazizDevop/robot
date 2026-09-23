@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -351,6 +352,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     ThreadingHTTPServer.daemon_threads = True
     notify.start_updates(autotrade.telegram_status_text)
+    threading.Thread(target=autotrade.cancel_stale_orders, daemon=True, name="stale-orders").start()
     httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Hyperliquid Radar listening on http://127.0.0.1:{PORT}/ · telegram "
           f"{'on' if notify.configured() else 'off'} · autotrade data in {autotrade.DATA_DIR}", flush=True)
