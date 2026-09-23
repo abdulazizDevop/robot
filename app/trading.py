@@ -84,6 +84,9 @@ DEFAULT_SETTINGS = {
     # hardcoded at 150 days and was the gate that actually emptied the radar:
     # every whale that cleared the PnL bar was rejected here.
     'radar_min_age_days': 150,
+    # Telegram push for fills, closes, rejections and engine errors. Needs
+    # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env; this only turns it off.
+    'telegram_notify': True,
 }
 
 _SETTING_TYPES = {
@@ -119,6 +122,7 @@ _SETTING_TYPES = {
     'radar_max_age_seconds': ('int', 10, 86_400),
     'radar_scan_addresses': ('int', 1, 100),
     'radar_min_age_days': ('int', 0, 3650),
+    'telegram_notify': ('bool',),
 }
 
 

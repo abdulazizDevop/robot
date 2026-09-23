@@ -118,6 +118,11 @@
     <label class="pair"><input id="setVerifyFills" type="checkbox"> проверять исполнение ордера</label>
   </div>
   <div class="toolbar">
+    <label class="pair"><input id="setTelegramNotify" type="checkbox"> Telegram-уведомления о сделках</label>
+    <button type="button" class="pair" id="atTelegramTest">Проверить</button>
+    <span id="atTelegramState" class="muted"></span>
+  </div>
+  <div class="toolbar">
     <label class="pair">Стороны <select id="setDirection"><option value="both">Long и Short</option><option value="long_only">только Long</option><option value="short_only">только Short</option></select></label>
     <label class="pair">Макс. позиций <input id="setMaxPositions" class="input" style="width:90px;min-width:90px" type="number" min="1" max="50" step="1"></label>
     <label class="pair">Макс. ордеров в час <input id="setMaxOrders" class="input" style="width:100px;min-width:100px" type="number" min="1" max="1000" step="1"></label>
@@ -224,6 +229,7 @@
     $('#setRadarMaxAge').value = settings.radar_max_age_seconds;
     $('#setRadarScan').value = settings.radar_scan_addresses;
     $('#setRadarMinAge').value = settings.radar_min_age_days;
+    $('#setTelegramNotify').checked = !!settings.telegram_notify;
   }
 
   async function loadSettings() {
@@ -276,6 +282,7 @@
         radar_max_age_seconds: Number($('#setRadarMaxAge').value),
         radar_scan_addresses: Number($('#setRadarScan').value),
         radar_min_age_days: Number($('#setRadarMinAge').value),
+        telegram_notify: $('#setTelegramNotify').checked,
       }));
       fillSettings(data.settings);
       const venue = data.venue_status || {};
@@ -317,6 +324,7 @@
       renderStatus(data);
       renderSavedOnly(data);
       renderExtraTargets(data);
+      renderTelegram(data);
       renderCandidates(data);
       renderMirrors(data);
       refreshWhaleOrders(data.target);
@@ -356,6 +364,33 @@
         <td class="${current ? 'green' : ''}">${current ? 'слежу сейчас' : ''}</td>
       </tr>`;
     }).join('')}</tbody></table>`;
+  }
+
+  function renderTelegram(data) {
+    const label = $('#atTelegramState');
+    if (!label) return;
+    const t = data.telegram || {};
+    if (!t.configured) {
+      label.textContent = 'Не настроено: нужны TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env на сервере.';
+      label.className = 'muted yellow';
+      return;
+    }
+    const when = t.last_ok_at ? new Date(Number(t.last_ok_at)).toLocaleTimeString('ru-RU') : '—';
+    label.textContent = t.last_error
+      ? `Ошибка доставки: ${t.last_error}`
+      : `Настроено · отправлено ${t.sent || 0} · последнее ${when}`;
+    label.className = 'muted ' + (t.last_error ? 'red' : 'green');
+  }
+
+  async function telegramTest() {
+    const button = $('#atTelegramTest');
+    button.disabled = true;
+    try {
+      const r = await api('/api/autotrade/notify-test', jsonPost({}));
+      window.alert(r.ok ? 'Сообщение отправлено — проверьте Telegram.' : 'Не отправлено: ' + (r.error || r.last_error || 'неизвестная ошибка'));
+      refreshStatus();
+    } catch (error) { window.alert('Не отправлено: ' + error.message); }
+    finally { button.disabled = false; }
   }
 
   function renderExtraTargets(data) {
@@ -723,6 +758,7 @@
     $('#atSetTarget').onclick = () => setTarget($('#atTarget').value.trim());
     $('#atClearTarget').onclick = () => { $('#atTarget').value = ''; setTarget(null); };
     $('#atAddTarget').onclick = addExtraTarget;
+    $('#atTelegramTest').onclick = telegramTest;
     $('#atExtraTarget').onkeydown = (event) => { if (event.key === 'Enter') addExtraTarget(); };
     // 1% / 5% / 10% presets: fill the field, the operator still presses Save.
     document.querySelectorAll('[data-dev]').forEach((button) => {

@@ -12,6 +12,7 @@
 #
 # Optional: DOMAIN=radar.example.com (defaults to <ip>.sslip.io), EMAIL=... for
 # Let's Encrypt, MODE=live to start live instead of dry-run.
+# Optional: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for push notifications.
 set -euo pipefail
 
 APP_DIR=/opt/liquidation-radar
@@ -62,6 +63,9 @@ BYBIT_TESTNET=false
 # until someone presses the button.
 RADAR_AUTOSTART=1
 AUTOTRADE_AUTOSTART=0
+# Telegram push (optional; empty = off)
+TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
 ENV
     chmod 600 .env
 fi

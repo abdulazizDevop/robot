@@ -22,6 +22,7 @@ import time
 
 import trading
 from trading import TradingError
+import notify
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get('DATA_DIR', '').strip() or os.path.join(ROOT, 'data')
@@ -34,6 +35,15 @@ CLOSE_ACTIONS = {'Close Long', 'Close Short'}
 # and fill normaliser instead of opening a second uncoordinated pipe to
 # Hyperliquid.
 _HOOKS = {}
+
+
+def _notify(text, key=None):
+    """Telegram, gated on the operator's setting. Never raises."""
+    try:
+        if trading.load_settings().get('telegram_notify', True):
+            notify.send(text, dedupe_key=key)
+    except Exception:  # noqa: BLE001 - a notifier must never touch the trade path
+        pass
 
 
 def configure(**hooks):
@@ -372,6 +382,7 @@ def snapshot():
         'leader_position_value': (leader.get((row['coin'], row['side'])) or {}).get('position_value'),
     } for row in rows]
     state['close_confirmations_required'] = int(settings.get('close_confirmations', 2))
+    state['telegram'] = notify.status()
     state['extra_targets'] = list(state.get('extra_targets') or [])
     state['max_extra_targets'] = MAX_EXTRA_TARGETS
     state['only_saved_addresses'] = bool(settings.get('only_saved_addresses'))
@@ -427,6 +438,7 @@ def start(target=None):
         if not WORKER or not WORKER.is_alive():
             WORKER = threading.Thread(target=_worker, name='autotrade', daemon=True)
             WORKER.start()
+    _notify(notify.engine_started(address, settings.get('mode'), settings.get('venue')), key='engine:start')
     return snapshot()
 
 
@@ -484,6 +496,7 @@ def stop():
         _hook('radar_stop')()
     except Exception:  # noqa: BLE001 - stopping must always succeed
         pass
+    _notify(notify.engine_stopped(), key='engine:stop')
     return snapshot()
 
 
@@ -499,8 +512,10 @@ def _worker():
             _set(last_error=None)
         except TradingError as error:
             _set(last_error=str(error))
+            _notify(notify.engine_error(error))
         except Exception as error:  # noqa: BLE001 - a bad poll must not kill the loop
             _set(last_error=f'{type(error).__name__}: {error}')
+            _notify(notify.engine_error(f'{type(error).__name__}: {error}'))
         finally:
             _set(last_poll_at=int(time.time() * 1000))
         if STOP_EVENT.wait(max(1, int(settings.get('poll_interval_seconds', 3)))):
@@ -738,6 +753,9 @@ def close_mirror(mirror, settings, broker, reason='лидер закрыл по�
             _release_mirror(mirror['key'])
             _record_decision(mirror.get('address') or '', coin, exit_side, None, None, None,
                              'closed', f'{reason}: закрытие исполнено')
+            _notify(notify.position_closed(coin, mirror['side'], f'{reason}: закрытие исполнено',
+                                           address=mirror.get('address'), mode=settings.get('mode')),
+                    key=f'closed:{resting}')
             return {'ok': True, 'filled': True, 'order_id': resting}
         age = (int(time.time() * 1000) - int(mirror.get('closing_since') or 0)) / 1000.0
         if age < float(settings.get('close_chase_seconds', 8)):
@@ -770,6 +788,10 @@ def close_mirror(mirror, settings, broker, reason='лидер закрыл по�
     })
     _record_decision(mirror.get('address') or '', coin, exit_side, None,
                      float(result.get('price') or price), None, 'closed', f'{reason}: {note}')
+    _notify(notify.position_closed(coin, mirror['side'], f'{reason}: {note}',
+                                   price=float(result.get('price') or price),
+                                   address=mirror.get('address'), mode=settings.get('mode')),
+            key=f"closed:{result.get('order_id') or mirror['key']}")
     if order_type == 'market' or result.get('dry_run'):
         _release_mirror(mirror['key'])
         return {'ok': True, 'filled': True, 'order_id': result.get('order_id')}
@@ -1000,6 +1022,7 @@ def _follow(address, settings, sync=True):
             delay = _note_failure(address, coin, side)
             _record_decision(address, coin, side, whale_price, market, deviation,
                              'failed', f'{error} (следующая попытка через {int(delay)} с)')
+            _notify(notify.order_failed(coin, side, error, address=address), key=f'failed:{address}:{coin}:{side}')
 
 
 def execute(coin, side, usd, whale_price, market_price, deviation, address, settings,
@@ -1058,6 +1081,8 @@ def execute(coin, side, usd, whale_price, market_price, deviation, address, sett
         result['book'] = book
     row['id'] = _record_order(row)
     result['record'] = row
+    _notify(notify.order_filled(row, address=address, mode=settings.get('mode')),
+            key=f"filled:{row.get('order_id') or row['id']}")
     return result
 
 

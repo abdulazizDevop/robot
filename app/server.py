@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from zoneinfo import ZoneInfo
 import autotrade, trading
+import notify
 
 ROOT=os.path.dirname(os.path.abspath(__file__))
 # Databases and mutable state live in DATA_DIR.  It defaults to the source
@@ -1649,6 +1650,7 @@ class Handler(SimpleHTTPRequestHandler):
             if path=='/api/autotrade/start': return self.send_json(autotrade.start(item.get('address') or None))
             if path=='/api/autotrade/stop': return self.send_json(autotrade.stop())
             if path=='/api/autotrade/settings': return self.send_json({'ok':True,'settings':trading.save_settings(item),'venue_status':trading.venue_status()})
+            if path=='/api/autotrade/notify-test': return self.send_json(notify.test_message())
             if path=='/api/autotrade/target/add':
                 autotrade.add_target(item.get('address')); return self.send_json(autotrade.snapshot())
             if path=='/api/autotrade/target/remove':
