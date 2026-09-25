@@ -6,7 +6,7 @@
 //   * the auto-trade leaders (asked from server.py every few seconds), and
 //   * the watchlist the page syncs here (web push + Telegram).
 // Every live fill is forwarded to server.py /internal/fills, which decides
-// about Telegram and Bybit. Hyperliquid allows 10 distinct users per
+// about Telegram and Bybit. Hyperliquid allows 15 distinct users per
 // connection, so leaders are subscribed first and the rest of the watchlist
 // fills the remaining slots.
 const fs = require('fs');
@@ -19,7 +19,7 @@ const ROOT = __dirname;
 const DATA_DIR = process.env.RADAR_DATA_DIR || path.join(ROOT, 'push-data');
 const PORT = Number(process.env.RADAR_PUSH_PORT || 8766);
 const WEB_PORT = Number(process.env.RADAR_PORT || 8765);
-const MAX_USERS = Number(process.env.HL_MAX_USERS || 10);
+const MAX_USERS = Number(process.env.HL_MAX_USERS || 15);
 const TOKEN_FILE = process.env.RADAR_INTERNAL_TOKEN_FILE || path.join(ROOT, 'data', 'internal.token');
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:radar@localhost';
 const HL_WS_URL = process.env.HL_WS_URL || 'wss://api.hyperliquid.xyz/ws';
