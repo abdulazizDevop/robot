@@ -28,22 +28,6 @@
     .mode-switch{display:grid;grid-template-columns:1fr 1fr;gap:6px}.mode-btn{border:1px solid #29434a;background:#091419;color:#9bb5ae;border-radius:4px;padding:8px 7px;font-size:11px}.mode-btn.active{background:#12363a;border-color:var(--cyan);color:#c8fff0}
     .autotrade{border-top:1px solid var(--line);margin-top:16px;padding-top:16px}.autotrade h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--amber)}.autotrade .input{margin-bottom:8px}.autotrade-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.autotrade-note{font-size:10px;color:#78918a;margin:8px 0}.autotrade-state{font-size:11px;color:#a8c9bf;margin-top:8px}
   </style>
-<style>
-  .content>section,.bottom-grid>section{min-width:0}
-  .bottom-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  @media (max-width:650px){.bottom-grid{grid-template-columns:minmax(0,1fr)}}
-  .trade-meta.wrap{white-space:normal;overflow:visible;text-overflow:clip}
-  .closed-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
-  .closed-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-  .closed-total{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);font-size:12px;color:#9bb5ae}
-  .closed-total b{font-size:15px}
-  #closedPanel .table th,#pnlPanel .table th{padding:10px 13px}
-  .pnl-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
-  .pnl-kpi{border:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:11px;color:#9bb5ae;text-transform:uppercase;letter-spacing:.06em}
-  .pnl-kpi b{font-size:18px;letter-spacing:0;text-transform:none}
-  .pnl-kpi.total{border-color:#35555c}
-  @media (max-width:650px){.pnl-kpis{grid-template-columns:minmax(0,1fr)}}
-</style>
 </head>
 <body>
   <div class="shell">
@@ -60,25 +44,25 @@
         <div class="field"><label>Режим радара</label><div class="mode-switch" role="group" aria-label="Режим радара"><button type="button" class="mode-btn active" data-mode="radar">Полный радар</button><button type="button" class="mode-btn" data-mode="best">Лучшие трейды</button></div></div>
         <div class="field"><label>Активы для discovery</label><div class="symbol-grid" id="symbols"></div></div>
         <div class="field"><label>Сохранённые адреса <span class="hint" id="savedCount">0 сохранено</span></label><textarea class="textarea" id="addresses" placeholder="0x...&#10;по одному адресу на строку"></textarea><button class="btn small" id="saveWatchlistBtn" style="margin-top:8px;width:100%;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4M8 16h8"/></svg>Сохранить адреса</button></div>
-        <div class="field"><label class="check"><input id="notifyToggle" type="checkbox" checked /> Браузерные уведомления</label><button class="btn small" id="pushBtn" style="margin-top:8px;width:100%;justify-content:center">Включить push</button></div>
+        <div class="field"><label class="check"><input id="notifyToggle" type="checkbox" checked /> Браузерные уведомления</label><label class="check" style="margin-top:9px"><input id="analyzeSavedToggle" type="checkbox" checked /> Анализировать сохранённые адреса</label><div class="hint" style="margin-top:5px">Выключено — поиск идёт только по новым, несохранённым адресам.</div><button class="btn small" id="pushBtn" style="margin-top:8px;width:100%;justify-content:center">Включить push</button></div>
         <div class="side-note"><strong>Что считается китом</strong><br/>Радар суммирует исполнения одного адреса по активу и направлению в заданном окне. Это наблюдаемые участники потока, а не официальный рейтинг Hyperliquid.</div>
       </div></aside>
       <main class="content">
         <section class="kpis"><div class="kpi"><div class="kpi-label">События</div><div class="kpi-value cyan" id="kpiEvents">0</div></div><div class="kpi"><div class="kpi-label">Объём в радаре</div><div class="kpi-value green" id="kpiVolume">$0</div></div><div class="kpi"><div class="kpi-label">Адреса</div><div class="kpi-value amber" id="kpiWallets">0</div></div><div class="kpi"><div class="kpi-label">Последний блок</div><div class="kpi-value" id="kpiTime">—</div></div></section>
-        <section class="panel"><div class="info-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></svg><span id="feedInfo">Добавьте адреса или запустите discovery: точные LONG/SHORT и ОТКРЫТИЕ/ЗАКРЫТИЕ доступны для watchlist через userFills.</span></div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Все</button><button class="filter" data-filter="buy">Покупки</button><button class="filter" data-filter="sell">Продажи</button><button class="filter" data-filter="whale">Крупные</button></div><div class="toolbar-actions"><button class="btn small" id="exportBtn" title="Скачать CSV"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>CSV</button><button class="btn small" id="exportExcelBtn" title="Сохранить таблицы на рабочий стол">Excel</button><button class="btn small" id="exportPnlBtn" title="Сохранить таблицу PnL на рабочий стол">PnL</button><button class="btn small" id="clearBtn" title="Очистить историю"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v5m4-5v5M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Очистить</button></div></div><div class="table-wrap"><table class="table"><thead><tr><th><button class="sort-btn active" data-sort="time">Время ↓</button></th><th><button class="sort-btn" data-sort="side">Сторона ↓</button></th><th><button class="sort-btn" data-sort="position">Позиция ↓</button></th><th><button class="sort-btn" data-sort="action">Действие ↓</button></th><th><button class="sort-btn" data-sort="address">Адрес ↓</button></th><th><button class="sort-btn" data-sort="coin">Актив ↓</button></th><th><button class="sort-btn" data-sort="price">Цена ↓</button></th><th><button class="sort-btn" data-sort="size">Размер ↓</button></th><th><button class="sort-btn" data-sort="usd">USD ↓</button></th><th><button class="sort-btn" data-sort="source">Источник ↓</button></th></tr></thead><tbody id="eventsBody"></tbody></table><div class="empty" id="eventsEmpty"><strong>Пока нет открытий</strong><span>Здесь только ОТКРЫТИЕ позиций адресов из watchlist. Закрытия — в блоке «Закрытые позиции» ниже.</span></div></div></section>
-        <div class="bottom-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">Обнаруженные адреса</div><div class="panel-sub">по накопленному объёму</div></div><span class="badge watch" id="discoveryCount">0</span></div><div class="scroll-list" id="walletList"><div class="empty"><strong>Discovery ещё не запущен</strong><span>Адреса появятся из live trades.</span></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">Лучшие трейды</div><div class="panel-sub">LONG/SHORT · открытие/закрытие · МСК</div></div><span class="badge watch" id="bestTradeCount">0</span></div><div class="scroll-list" id="bestTradesList"><div class="empty"><strong>Точных трейдов пока нет</strong><span>Здесь появятся крупнейшие исполнения из userFills.</span></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">Портфели watchlist</div><div class="panel-sub">что адрес держит сейчас</div></div><span class="badge watch" id="portfolioCount">0</span></div><div class="scroll-list" id="portfolioList"><div class="empty"><strong>Портфель пока пуст</strong><span>Добавьте адрес и получите точный размер позиции.</span></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">Системный журнал</div><div class="panel-sub">состояние соединения</div></div></div><div class="scroll-list" id="logList"><div class="empty"><strong>Готово к запуску</strong><span>Настройки сохраняются локально.</span></div></div></section></div>
+        <section class="panel"><div class="info-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></svg><span id="feedInfo">Добавьте адреса или запустите discovery: точные LONG/SHORT и ОТКРЫТИЕ/ЗАКРЫТИЕ доступны для watchlist через userFills.</span></div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Все</button><button class="filter" data-filter="buy">Покупки</button><button class="filter" data-filter="sell">Продажи</button><button class="filter" data-filter="whale">Крупные</button></div><div class="toolbar-actions"><button class="btn small" id="exportBtn" title="Скачать CSV"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>CSV</button><button class="btn small" id="exportExcelBtn" title="Сохранить таблицы на рабочий стол">Excel</button><button class="btn small" id="exportPnlBtn" title="Сохранить таблицу PnL на рабочий стол">PnL</button><button class="btn small" id="clearBtn" title="Очистить историю"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v5m4-5v5M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Очистить</button></div></div><div class="table-wrap"><table class="table"><thead><tr><th><button class="sort-btn active" data-sort="time">Время ↓</button></th><th><button class="sort-btn" data-sort="side">Сторона ↓</button></th><th><button class="sort-btn" data-sort="position">Позиция ↓</button></th><th><button class="sort-btn" data-sort="action">Действие ↓</button></th><th><button class="sort-btn" data-sort="address">Адрес ↓</button></th><th><button class="sort-btn" data-sort="coin">Актив ↓</button></th><th><button class="sort-btn" data-sort="price">Цена ↓</button></th><th><button class="sort-btn" data-sort="size">Размер ↓</button></th><th><button class="sort-btn" data-sort="usd">USD ↓</button></th><th><button class="sort-btn" data-sort="source">Источник ↓</button></th></tr></thead><tbody id="eventsBody"></tbody></table><div class="empty" id="eventsEmpty"><strong>Пока нет событий</strong><span>Нажмите «Запустить анализ», чтобы открыть WebSocket Hyperliquid.</span></div></div></section>
+        <div class="bottom-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">Обнаруженные адреса</div><div class="panel-sub">по накопленному объёму</div></div><span class="badge watch" id="discoveryCount">0</span></div><div class="scroll-list" id="walletList"><div class="empty"><strong>Discovery ещё не запущен</strong><span>Адреса появятся из live trades.</span></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">Лучшие трейды</div><div class="panel-sub">LONG/SHORT · открытие/закрытие · МСК</div></div><span class="badge watch" id="bestTradeCount">0</span></div><div class="scroll-list" id="bestTradesList"><div class="empty"><strong>Точных трейдов пока нет</strong><span>Здесь появятся крупнейшие исполнения из userFills.</span></div></div></section><section class="panel"><div class="panel-head"><div><div><div class="panel-title">Портфели watchlist</div><div class="panel-sub">что адрес держит сейчас</div></div><span class="badge watch" id="portfolioCount">0</span></div><div class="scroll-list" id="portfolioList"><div class="empty"><strong>Портфель пока пуст</strong><span>Добавьте адрес и получите точный размер позиции.</span></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">Системный журнал</div><div class="panel-sub">состояние соединения</div></div></div><div class="scroll-list" id="logList"><div class="empty"><strong>Готово к запуску</strong><span>Настройки сохраняются локально.</span></div></div></section><section class="panel"><div class="panel-head"><div><div><div class="panel-title">Прибыльные открытые позиции</div><div class="panel-sub">3 месяца до запуска · активна сегодня/вчера · PnL сейчас</div></div><button class="btn small" id="refreshPnlBtn">Обновить 3 месяца</button></div><div id="bestPnlSummary" class="autotrade-note" style="padding:10px 16px;border-bottom:1px solid var(--line)">Самый прибыльный адрес появится после расчёта PnL.</div><div class="scroll-list" id="openPnlList"><div class="empty"><strong>История ещё не загружена</strong><span>Нажмите «Обновить 3 месяца».</span></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">Закрытые позиции: PnL</div><div class="panel-sub">3 месяца до запуска · только прибыльные</div></div><span class="badge watch" id="closedPnlCount">0</span></div><div class="scroll-list" id="closedPnlList"><div class="empty"><strong>Нет расчёта</strong><span>Здесь будут только прибыльные закрытые позиции.</span></div></div></section></div>
       </main>
     </div>
   </div>
-  <div class="modal-backdrop" id="portfolioModal" hidden><section class="portfolio-panel" role="dialog" aria-modal="true" aria-labelledby="portfolioTitle"><div class="portfolio-head"><div><div class="portfolio-title" id="portfolioTitle">Портфель адреса</div><div class="portfolio-address" id="portfolioAddress"></div><button class="btn small" id="portfolioWatch" style="margin-top:10px">Сохранить адрес</button></div><button class="portfolio-close" id="portfolioClose" title="Закрыть">×</button></div><div class="portfolio-stats"><div class="portfolio-stat">Объём исполнений<b id="portfolioVolume">$0</b></div><div class="portfolio-stat">Событий<b id="portfolioEvents">0</b></div><div class="portfolio-stat">Последнее событие<b id="portfolioLast">—</b></div></div><div class="portfolio-section"><h3>Активы и позиции</h3><div class="portfolio-scroll"><table class="portfolio-table"><thead><tr><th>Актив</th><th>Позиция</th><th>Статус</th><th>USD</th><th>Покупки</th><th>Продажи</th><th>Открытие</th><th>Закрытие</th></tr></thead><tbody id="portfolioHoldings"></tbody></table></div><h3>Исполнения</h3><div class="portfolio-scroll"><table class="portfolio-table"><thead><tr><th>Время МСК</th><th>Сторона</th><th>Позиция</th><th>Действие</th><th>Актив</th><th>Цена</th><th>Размер</th><th>USD</th></tr></thead><tbody id="portfolioFills"></tbody></table></div></div></section></div>
+  <div class="modal-backdrop" id="portfolioModal" hidden><section class="portfolio-panel" role="dialog" aria-modal="true" aria-labelledby="portfolioTitle"><div class="portfolio-head"><div><div class="portfolio-title" id="portfolioTitle">Портфель адреса</div><div class="portfolio-address" id="portfolioAddress"></div><button class="btn small" id="portfolioWatch" style="margin-top:10px">Сохранить адрес</button></div><button class="portfolio-close" id="portfolioClose" title="Закрыть">×</button></div><div class="portfolio-stats"><div class="portfolio-stat">Объём исполнений<b id="portfolioVolume">$0</b></div><div class="portfolio-stat">Событий<b id="portfolioEvents">0</b></div><div class="portfolio-stat">Последнее событие<b id="portfolioLast">—</b></div></div><div class="portfolio-section"><h3>Активы и позиции</h3><div class="portfolio-scroll"><table class="portfolio-table"><thead><tr><th>Актив</th><th>Позиция</th><th>Статус</th><th>USD</th><th>Вход</th><th>Рынок</th><th>Изменение</th><th>PnL</th><th>Открытие</th><th>Закрытие</th></tr></thead><tbody id="portfolioHoldings"></tbody></table></div><div id="portfolioBestPnl" class="autotrade-note" style="padding:12px 0"></div><h3>Исполнения</h3><div class="portfolio-scroll"><table class="portfolio-table"><thead><tr><th>Время МСК</th><th>Сторона</th><th>Позиция</th><th>Действие</th><th>Актив</th><th>Цена</th><th>Размер</th><th>USD</th></tr></thead><tbody id="portfolioFills"></tbody></table></div></div></section></div>
   <div class="toast-stack" id="toastStack"></div>
   <script>
     const API='https://api.hyperliquid.xyz/info', WS='wss://api.hyperliquid.xyz/ws', STORAGE_KEY='hl-radar-state-v2';
     const DEFAULT_SYMBOLS=['BTC','ETH','SOL','HYPE','XRP','DOGE','SUI','AVAX','LINK','ARB','OP','WIF'];
-    const state={running:false, socket:null, reconnectTimer:null, events:[], wallets:{}, aggregate:{}, addressAggregate:{}, batchAddresses:[], batchEvaluating:false, filter:'all', sortKey:'time', sortDir:-1, portfolioAddress:null, subscribedCoins:[], manualAddresses:[], autoWatched:[], logs:[], threshold:250000, autoWatchThreshold:100000, batchSize:30, windowMins:10, notify:true, lastTime:0, renderTimer:null, saveTimer:null, pruneCounter:0};
+    const state={running:false, socket:null, reconnectTimer:null, events:[], wallets:{}, aggregate:{}, addressAggregate:{}, batchAddresses:[], batchEvaluating:false, filter:'all', sortKey:'time', sortDir:-1, portfolioAddress:null, subscribedCoins:[], manualAddresses:[], autoWatched:[], logs:[], threshold:250000, autoWatchThreshold:100000, batchSize:30, windowMins:10, notify:true, analyzeSaved:true, lastTime:0, renderTimer:null, saveTimer:null, pruneCounter:0};
     const $=id=>document.getElementById(id); const fmtUsd=n=>n>=1e9?'$'+(n/1e9).toFixed(2)+'B':n>=1e6?'$'+(n/1e6).toFixed(2)+'M':n>=1e3?'$'+(n/1e3).toFixed(1)+'K':'$'+Math.round(n).toLocaleString('en-US'); const fmtNum=n=>Number(n).toLocaleString('en-US',{maximumFractionDigits:6}); const short=a=>a?`${a.slice(0,6)}…${a.slice(-4)}`:'—';
-    function load(){try{const s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');Object.assign(state,{events:s.events||[],wallets:s.wallets||{},manualAddresses:s.manualAddresses||[],threshold:s.threshold||250000,autoWatchThreshold:s.autoWatchThreshold||100000,batchSize:s.batchSize||30,windowMins:s.windowMins||10,notify:s.notify!==false});$('threshold').value=state.threshold;$('autoWatchThreshold').value=state.autoWatchThreshold;$('batchSize').value=state.batchSize;$('windowMins').value=state.windowMins;$('notifyToggle').checked=state.notify;$('addresses').value=state.manualAddresses.join('\n')}catch(e){log('Локальное хранилище недоступно: '+e.message,'warn')}render();}
-    function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify({events:state.events.slice(0,5000),wallets:state.wallets,threshold:state.threshold,autoWatchThreshold:state.autoWatchThreshold,batchSize:state.batchSize,windowMins:state.windowMins,notify:state.notify,manualAddresses:state.manualAddresses}))}catch(e){log('Не удалось сохранить состояние: '+e.message,'warn')}}
+    function load(){try{const s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');Object.assign(state,{events:s.events||[],wallets:s.wallets||{},manualAddresses:s.manualAddresses||[],threshold:s.threshold||250000,autoWatchThreshold:s.autoWatchThreshold||100000,batchSize:s.batchSize||30,windowMins:s.windowMins||10,notify:s.notify!==false,analyzeSaved:s.analyzeSaved!==false});$('threshold').value=state.threshold;$('autoWatchThreshold').value=state.autoWatchThreshold;$('batchSize').value=state.batchSize;$('windowMins').value=state.windowMins;$('notifyToggle').checked=state.notify;$('analyzeSavedToggle').checked=state.analyzeSaved;$('addresses').value=state.manualAddresses.join('\n')}catch(e){log('Локальное хранилище недоступно: '+e.message,'warn')}render();}
+    function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify({events:state.events.slice(0,5000),wallets:state.wallets,threshold:state.threshold,autoWatchThreshold:state.autoWatchThreshold,batchSize:state.batchSize,windowMins:state.windowMins,notify:state.notify,analyzeSaved:state.analyzeSaved,manualAddresses:state.manualAddresses}))}catch(e){log('Не удалось сохранить состояние: '+e.message,'warn')}}
     function scheduleSave(){clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{state.saveTimer=null;save()},350)}
     function scheduleRender(){if(state.renderTimer)return;state.renderTimer=setTimeout(()=>{state.renderTimer=null;render()},120)}
     function pruneState(now){const cutoff=now-state.windowMins*120000;for(const [key,value] of Object.entries(state.aggregate))if(value.last<cutoff)delete state.aggregate[key];for(const [address,value] of Object.entries(state.addressAggregate))if(value.last<cutoff&&!state.batchAddresses.includes(address))delete state.addressAggregate[address];const walletKeys=Object.keys(state.wallets);if(walletKeys.length>5000){const keep=new Set(walletKeys.sort((a,b)=>state.wallets[b].total-state.wallets[a].total).slice(0,5000));for(const address of walletKeys)if(!keep.has(address)&&!state.manualAddresses.includes(address))delete state.wallets[address]}}
@@ -88,7 +72,7 @@
     async function post(body){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
     async function fetchCoins(){try{const data=await post({type:'meta'});const names=(data.universe||[]).filter(x=>!x.isDelisted).map(x=>x.name);return names}catch(e){log('Не удалось получить meta: '+e.message,'warn');return DEFAULT_SYMBOLS}}
     function subscribe(msg){if(state.socket&&state.socket.readyState===1)state.socket.send(JSON.stringify({method:'subscribe',subscription:msg}));}
-    function connect(){if(!state.running)return; const ws=new WebSocket(WS);state.socket=ws;ws.onopen=()=>{setStatus(true,'Подключен к Hyperliquid');log('WebSocket подключен');state.subscribedCoins.forEach(c=>subscribe({type:'trades',coin:c}));state.manualAddresses.forEach(a=>subscribe({type:'userFills',user:a,aggregateByTime:false}));};ws.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.channel==='trades'&&Array.isArray(m.data))m.data.forEach(handleTrade);if(m.channel==='userFills'&&m.data?.fills)m.data.fills.forEach(f=>handleFill(f,m.data.user,'userFills'));}catch(err){log('Ошибка сообщения: '+err.message,'warn')}};ws.onerror=()=>log('Ошибка WebSocket; выполняю переподключение','warn');ws.onclose=()=>{setStatus(false,'Соединение закрыто');if(state.running){clearTimeout(state.reconnectTimer);state.reconnectTimer=setTimeout(connect,3000)}};}
+    function connect(){if(!state.running)return; const ws=new WebSocket(WS);state.socket=ws;ws.onopen=()=>{setStatus(true,'Подключен к Hyperliquid');log('WebSocket подключен');state.subscribedCoins.forEach(c=>subscribe({type:'trades',coin:c}));if(state.analyzeSaved)state.manualAddresses.forEach(a=>subscribe({type:'userFills',user:a,aggregateByTime:false}));};ws.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.channel==='trades'&&Array.isArray(m.data))m.data.forEach(handleTrade);if(m.channel==='userFills'&&m.data?.fills)m.data.fills.forEach(f=>handleFill(f,m.data.user,'userFills'));}catch(err){log('Ошибка сообщения: '+err.message,'warn')}};ws.onerror=()=>log('Ошибка WebSocket; выполняю переподключение','warn');ws.onclose=()=>{setStatus(false,'Соединение закрыто');if(state.running){clearTimeout(state.reconnectTimer);state.reconnectTimer=setTimeout(connect,3000)}};}
     function classifyDir(dir,source){const d=String(dir||'').toLowerCase();if(d.includes('open long'))return {position:'LONG',action:'ОТКРЫТИЕ'};if(d.includes('close long'))return {position:'LONG',action:'ЗАКРЫТИЕ'};if(d.includes('open short'))return {position:'SHORT',action:'ОТКРЫТИЕ'};if(d.includes('close short'))return {position:'SHORT',action:'ЗАКРЫТИЕ'};if(source==='trades')return {position:'Н/Д',action:'Н/Д'};if(d==='buy')return {position:'SPOT',action:'ПОКУПКА'};if(d==='sell')return {position:'SPOT',action:'ПРОДАЖА'};return {position:'Н/Д',action:'Н/Д'};}
     const ACTION_OPEN='\u041E\u0422\u041A\u0420\u042B\u0422\u0418\u0415',ACTION_CLOSE='\u0417\u0410\u041A\u0420\u042B\u0422\u0418\u0415';
     function classifyDir(dir,source){const d=String(dir||'').toLowerCase();if(d.includes('open long'))return {position:'LONG',action:ACTION_OPEN};if(d.includes('close long'))return {position:'LONG',action:ACTION_CLOSE};if(d.includes('open short'))return {position:'SHORT',action:ACTION_OPEN};if(d.includes('close short'))return {position:'SHORT',action:ACTION_CLOSE};if(source==='trades')return {position:'N/A',action:'N/A'};if(d==='buy')return {position:'SPOT',action:'BUY'};if(d==='sell')return {position:'SPOT',action:'SELL'};return {position:'N/A',action:'N/A'};}
@@ -166,8 +150,29 @@
   </script>
 <script>
 (() => {
+  const toolbar = document.querySelector('.toolbar');
+  if (toolbar && !document.getElementById('radarLeaders')) { const strip = document.createElement('div'); strip.id='radarLeaders'; strip.innerHTML='<div class="leader-card" data-leader="volume"><b>Максимальный объём</b>Загрузка…</div><div class="leader-card" data-leader="open"><b>Лучший открытый PnL</b>Загрузка…</div><div class="leader-card" data-leader="closed"><b>Лучший закрытый PnL</b>Загрузка…</div>'; toolbar.after(strip); }
+  const sortRows = mode => { const body=$('eventsBody'); if(!body)return; const rows=[...body.rows]; const rank={ОТКРЫТИЕ:0,ЗАКРЫТИЕ:1,LONG:0,SHORT:1}; rows.sort((a,b)=>{const av=mode==='position'?rank[a.cells[2]?.textContent.trim()]??9:rank[a.cells[3]?.textContent.trim()]??9;const bv=mode==='position'?rank[b.cells[2]?.textContent.trim()]??9:rank[b.cells[3]?.textContent.trim()]??9;return av-bv || Number(b.cells[0]?.textContent.replace(/\D/g,''))-Number(a.cells[0]?.textContent.replace(/\D/g,''));}); rows.forEach(row=>body.appendChild(row));};
+  const updateLeaders = () => { const volume=Object.values(state.wallets).sort((a,b)=>(b.total||0)-(a.total||0))[0]; const open=document.querySelector('#openPnlList .trade-row'); const closed=document.querySelector('#closedPnlList .trade-row'); const set=(type,label,address,value)=>{const node=document.querySelector('[data-leader="'+type+'"]');if(node)node.innerHTML='<b>'+label+'</b>'+(address?'<button class="address-link" data-leader-address="'+esc(address)+'">'+short(address)+'</button> · '+value:'Нет данных');}; set('volume','Максимальный объём',volume?.address,volume?fmtUsd(volume.total):''); set('open','Лучший открытый PnL',open?.querySelector('[data-address]')?.dataset.address,open?.querySelector('.trade-usd')?.textContent||''); set('closed','Лучший закрытый PnL',closed?.querySelector('[data-address]')?.dataset.address,closed?.querySelector('.trade-usd')?.textContent||''); document.querySelectorAll('[data-leader-address]').forEach(button=>button.onclick=()=>openPortfolio(button.dataset.leaderAddress)); };
+  const oldRender=window.render;
+  window.render=()=>{oldRender();setTimeout(()=>{sortRows(window.__eventSortMode||'action');updateLeaders();},0)};
+  document.querySelectorAll('.sort-btn[data-sort="action"],.sort-btn[data-sort="position"]').forEach(button=>button.addEventListener('click',()=>{window.__eventSortMode=button.dataset.sort;setTimeout(()=>sortRows(window.__eventSortMode),0)}));
+  new MutationObserver(updateLeaders).observe(document.querySelector('.bottom-grid'),{childList:true,subtree:true});
+  updateLeaders(); sortRows('action');
+})();
+</script>
+<script>
+(() => {
+  state.events=state.events.slice(0,1500);
+  state.windowMins=Math.max(1,state.windowMins||10);
+  const originalScheduleRender=window.scheduleRender;
+  // A live feed can deliver many fills in a single second.  Render them in
+  // batches, otherwise rebuilding tables continuously makes scrolling jerky.
+  window.scheduleRender=()=>{clearTimeout(state.renderTimer);state.renderTimer=setTimeout(()=>{state.renderTimer=null;window.render()},900)};
+  const originalScheduleSave=window.scheduleSave;
+  window.scheduleSave=()=>{clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{state.saveTimer=null;save()},2000)};
   const host=document.querySelector('.controls'); if(!host)return;
-  const box=document.createElement('div'); box.className='autotrade'; box.innerHTML=`<h3>Автоторговля Bybit Mainnet</h3><input class="input" id="bybitApiKey" type="password" autocomplete="off" placeholder="Bybit API Key (не сохраняется в браузере)"><input class="input" id="bybitApiSecret" type="password" autocomplete="off" placeholder="Bybit API Secret"><textarea class="textarea" id="tradeAddresses" placeholder="1–2 адреса Hyperliquid через запятую"></textarea><div class="autotrade-grid"><input class="input" id="tradePercent" aria-label="Процент депозита" type="number" min="0.01" max="100" step="0.01" value="10" placeholder="Процент депозита"><input class="input" id="tradeLeverage" aria-label="Плечо" type="number" min="1" max="100" step="1" value="3" placeholder="Плечо"></div><select class="input" id="tradeOrderType" aria-label="Тип ордера"><option value="Limit">Лимитный ордер по текущей цене</option><option value="Market">Рыночный ордер</option></select><div class="autotrade-note"><b>Процент депозита</b> — какую долю доступного баланса использовать для новой сделки. Например, 10 = 10% баланса.<br><b>Плечо</b> — размер кредитного плеча Bybit для сделки. Например, 3 = 3x; риск и убыток также увеличиваются.<br><b>Лимитный</b> — ордер ставится по лучшей цене стакана (комиссия мейкера) и 15 секунд переставляется за ценой. Остаток добирается по текущей цене, без проскальзывания. Если цена ушла больше чем на 0.5%, вход отменяется. Закрытие всегда доводится до конца.</div><button class="btn small" id="saveAutoTradeBtn" style="width:100%;justify-content:center">Сохранить настройки</button><button class="btn small danger" id="toggleAutoTradeBtn" style="margin-top:8px;width:100%;justify-content:center">Включить автоторговлю</button><div class="autotrade-state" id="autoTradeState">Автоторговля выключена</div><div class="autotrade-note" id="autoTradeEvents"></div><button class="btn small" id="telegramTestBtn" style="margin-top:4px;width:100%;justify-content:center">Проверить Telegram</button><div class="autotrade-state" id="telegramState"></div>`; host.appendChild(box);
+  const box=document.createElement('div'); box.className='autotrade'; box.innerHTML=`<h3>Автоторговля Bybit Mainnet</h3><input class="input" id="bybitApiKey" type="password" autocomplete="off" placeholder="Bybit API Key (не сохраняется в браузере)"><input class="input" id="bybitApiSecret" type="password" autocomplete="off" placeholder="Bybit API Secret"><textarea class="textarea" id="tradeAddresses" placeholder="1–2 адреса Hyperliquid через запятую"></textarea><div class="autotrade-grid"><input class="input" id="tradePercent" aria-label="Процент депозита" type="number" min="0.01" max="100" step="0.01" value="10" placeholder="Процент депозита"><input class="input" id="tradeLeverage" aria-label="Плечо" type="number" min="1" max="100" step="1" value="3" placeholder="Плечо"></div><div class="autotrade-note"><b>Процент депозита</b> — какую долю доступного баланса использовать для новой сделки. Например, 10 = 10% баланса.<br><b>Плечо</b> — размер кредитного плеча Bybit для сделки. Например, 3 = 3x; риск и убыток также увеличиваются.</div><button class="btn small" id="saveAutoTradeBtn" style="width:100%;justify-content:center">Сохранить настройки</button><button class="btn small danger" id="toggleAutoTradeBtn" style="margin-top:8px;width:100%;justify-content:center">Включить автоторговлю</button><div class="autotrade-state" id="autoTradeState">Автоторговля выключена</div>`; host.appendChild(box);
   const bybitField=document.createElement('div'); bybitField.className='field'; bybitField.innerHTML=`<label>Пары Bybit для discovery <span class="hint">BTC / BTCUSDT / BTC-USDT</span></label><div style="display:flex;gap:7px"><input class="input" id="bybitSymbolInput" placeholder="Например: BTC/USDT"><button class="btn small" id="addBybitSymbolBtn">Добавить</button></div><div class="autotrade-note" id="bybitSymbolInfo">Добавляются только пары, которые существуют на Bybit. Нажмите × у пары, чтобы удалить.</div>`; const symbolsField=$('symbols')?.closest('.field'); if(symbolsField)symbolsField.after(bybitField);
   const bybitStore='hl-radar-bybit-symbols-v1'; const customBybitSymbols=new Set(JSON.parse(localStorage.getItem(bybitStore)||'[]'));
   const normalizeBybitSymbol=value=>String(value||'').toUpperCase().trim().replace(/[\s/_-]/g,'').replace(/USDC$/,'').replace(/USDT$/,'');
@@ -175,14 +180,14 @@
   function renderBybitSymbols(){const grid=$('symbols');if(!grid)return;grid.querySelectorAll('[data-bybit-custom]').forEach(x=>x.remove());[...customBybitSymbols].forEach(coin=>{const b=document.createElement('button');b.type='button';b.className='symbol active';b.dataset.symbol=coin;b.dataset.bybitCustom='1';b.title='Удалить пару Bybit из списка';b.textContent=coin+' ×';b.onclick=()=>{customBybitSymbols.delete(coin);saveBybitSymbols();renderBybitSymbols()};grid.appendChild(b)});}
   async function addBybitSymbol(){const raw=$('bybitSymbolInput').value,coin=normalizeBybitSymbol(raw);if(!/^[A-Z0-9]{2,20}$/.test(coin)){return $('bybitSymbolInfo').textContent='Укажите пару, например BTC, BTC/USDT или BTCUSDT.'}const symbol=coin+'USDT';$('bybitSymbolInfo').textContent='Проверяю '+symbol+' на Bybit…';try{const r=await fetch('https://api.bybit.com/v5/market/instruments-info?category=linear&symbol='+encodeURIComponent(symbol));const d=await r.json();if(!r.ok||d.retCode!==0||!d.result?.list?.length){$('bybitSymbolInfo').textContent='Пары '+symbol+' нет на Bybit — она не добавлена.';return}customBybitSymbols.add(coin);saveBybitSymbols();renderBybitSymbols();$('bybitSymbolInput').value='';$('bybitSymbolInfo').textContent='Добавлена '+symbol+'. Она будет участвовать в discovery после запуска анализа.'}catch(e){$('bybitSymbolInfo').textContent='Не удалось проверить Bybit: '+e.message}}
   $('addBybitSymbolBtn').onclick=addBybitSymbol;$('bybitSymbolInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addBybitSymbol()}});renderBybitSymbols();
-  const auto={on:false, server:false, leaders:new Map(), pending:new Map()};
+  const auto={on:false, leaders:new Map(), pending:new Map()};
   const parse=()=>[...new Set($('tradeAddresses').value.split(/[,\s]+/).map(x=>x.trim().toLowerCase()).filter(x=>/^0x[0-9a-f]{40}$/.test(x)))].slice(0,2);
-  const status=async(fill=true)=>{try{const r=await fetch('/autotrade/status');const s=await r.json();auto.server=!!s.server;$('autoTradeState').textContent=s.configured?(s.enabled?'Включена · '+s.addresses.length+' адрес(а) · ключ '+s.apiKeyMask+(s.server?' · работает на сервере, браузер можно закрыть':''):'Настройки сохранены, выключена'):'Ключи и настройки не заданы';$('toggleAutoTradeBtn').textContent=s.enabled?'Выключить автоторговлю':'Включить автоторговлю';if(fill){if(s.addresses?.length)$('tradeAddresses').value=s.addresses.join(', ');if(s.equityPercent)$('tradePercent').value=s.equityPercent;if(s.leverage)$('tradeLeverage').value=s.leverage;if(s.orderType)$('tradeOrderType').value=s.orderType}auto.on=!!s.enabled;const ev=(s.events||[]).filter(x=>x.kind!=='config').slice(0,5);$('autoTradeEvents').innerHTML=ev.length?'<b>Последние решения сервера</b><br>'+ev.map(x=>esc(time(x.t)+' · '+(x.coin?x.coin+': ':'')+x.text)).join('<br>'):'';const tg=s.telegram||{};$('telegramState').textContent=tg.configured?(tg.lastError?'Telegram: ошибка — '+tg.lastError:'Telegram подключён'+(tg.lastOkAt?' · последнее сообщение '+time(tg.lastOkAt):'')):'Telegram не настроен на сервере'}catch(e){$('autoTradeState').textContent='Сервер автоторговли недоступен'}};
-  const saveConfig=async enabled=>{const r=await fetch('/autotrade/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey:$('bybitApiKey').value,apiSecret:$('bybitApiSecret').value,addresses:parse(),equityPercent:Number($('tradePercent').value),leverage:Number($('tradeLeverage').value),orderType:$('tradeOrderType').value,enabled})});const d=await r.json();if(!r.ok)throw Error(d.error||'Ошибка сохранения');$('bybitApiKey').value='';$('bybitApiSecret').value='';await status();return d};
+  const status=async()=>{try{const r=await fetch('/autotrade/status');const s=await r.json();$('autoTradeState').textContent=s.configured?(s.enabled?'Включена · '+s.addresses.length+' адрес(а) · ключ '+s.apiKeyMask:'Настройки сохранены, выключена'):'Ключи и настройки не заданы';$('toggleAutoTradeBtn').textContent=s.enabled?'Выключить автоторговлю':'Включить автоторговлю';if(s.addresses?.length)$('tradeAddresses').value=s.addresses.join(', ');if(s.equityPercent)$('tradePercent').value=s.equityPercent;if(s.leverage)$('tradeLeverage').value=s.leverage;auto.on=!!s.enabled}catch(e){$('autoTradeState').textContent='Сервер автоторговли недоступен'}};
+  const saveConfig=async enabled=>{const r=await fetch('/autotrade/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey:$('bybitApiKey').value,apiSecret:$('bybitApiSecret').value,addresses:parse(),equityPercent:Number($('tradePercent').value),leverage:Number($('tradeLeverage').value),enabled})});const d=await r.json();if(!r.ok)throw Error(d.error||'Ошибка сохранения');$('bybitApiKey').value='';$('bybitApiSecret').value='';await status();return d};
   $('saveAutoTradeBtn').onclick=async()=>{try{await saveConfig(auto.on);toast('Автоторговля','Настройки сохранены в защищённом хранилище','buy')}catch(e){toast('Ошибка автоторговли',e.message,'sell')}};
   $('toggleAutoTradeBtn').onclick=async()=>{try{const next=!auto.on;const d=await saveConfig(next);auto.on=next;if(next){const add=parse().filter(a=>!state.manualAddresses.includes(a));state.manualAddresses=[...state.manualAddresses,...add];$('addresses').value=state.manualAddresses.join('\n');if(state.running&&state.socket?.readyState===1)add.forEach(a=>subscribe({type:'userFills',user:a,aggregateByTime:false}));if(!state.running)start();toast('Автоторговля включена','Ордера будут отправляться на Bybit Mainnet','buy')}else toast('Автоторговля выключена','Новые ордера не отправляются','sell');await status()}catch(e){toast('Ошибка автоторговли',e.message,'sell')}};
-  async function leaderSignal(e){if(auto.server||!auto.on||e.source!=='userFills'||!['LONG','SHORT'].includes(e.position)||!['ОТКРЫТИЕ','ЗАКРЫТИЕ'].includes(e.action))return;const address=String(e.address||'').toLowerCase();if(!parse().includes(address))return;const key=address+'|'+e.coin;clearTimeout(auto.pending.get(key));auto.pending.set(key,setTimeout(async()=>{try{const data=await post({type:'clearinghouseState',user:address});const p=(data.assetPositions||[]).map(x=>x.position).find(x=>String(x.coin)===String(e.coin));const size=Number(p?.szi||0);auto.leaders.set(key,size?{side:size>0?'Buy':'Sell',time:Number(e.time)||Date.now()}:null);const active=[...auto.leaders.entries()].filter(([k,v])=>k.endsWith('|'+e.coin)&&v);active.sort((a,b)=>b[1].time-a[1].time);const desired=active[0]?.[1]?.side||'';const r=await fetch('/autotrade/signal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address,coin:e.coin,side:desired})});const out=await r.json();if(out.action)log('Bybit: '+out.action);else if(out.skipped)log('Bybit: '+out.skipped)}catch(err){log('Автоторговля: '+err.message,'warn')}},900))}
-  const oldRecord=record; record=function(e){oldRecord(e);leaderSignal(e)}; status(); setInterval(()=>status(false),20000);$('telegramTestBtn').onclick=async()=>{try{const r=await fetch('/telegram/test',{method:'POST'});const d=await r.json();if(d.ok)toast('Telegram','Тестовое сообщение отправлено','buy');else toast('Telegram не ответил',d.error||('HTTP '+r.status),'sell')}catch(e){toast('Telegram',e.message,'sell')}status(false)};
+  async function leaderSignal(e){if(!auto.on||e.source!=='userFills'||!['LONG','SHORT'].includes(e.position)||!['ОТКРЫТИЕ','ЗАКРЫТИЕ'].includes(e.action))return;const address=String(e.address||'').toLowerCase();if(!parse().includes(address))return;const key=address+'|'+e.coin;clearTimeout(auto.pending.get(key));auto.pending.set(key,setTimeout(async()=>{try{const data=await post({type:'clearinghouseState',user:address});const p=(data.assetPositions||[]).map(x=>x.position).find(x=>String(x.coin)===String(e.coin));const size=Number(p?.szi||0);auto.leaders.set(key,size?{side:size>0?'Buy':'Sell',time:Number(e.time)||Date.now()}:null);const active=[...auto.leaders.entries()].filter(([k,v])=>k.endsWith('|'+e.coin)&&v);active.sort((a,b)=>b[1].time-a[1].time);const desired=active[0]?.[1]?.side||'';const r=await fetch('/autotrade/signal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address,coin:e.coin,side:desired})});const out=await r.json();if(out.action)log('Bybit: '+out.action);else if(out.skipped)log('Bybit: '+out.skipped)}catch(err){log('Автоторговля: '+err.message,'warn')}},900))}
+  const oldRecord=record; record=function(e){oldRecord(e);if(state.events.length>1500)state.events.length=1500;leaderSignal(e)}; status();
 })();
 </script>
 <script>
@@ -210,19 +215,16 @@
   };
   const hideUnknownPortfolioRows=()=>document.querySelectorAll('#portfolioHoldings tr').forEach(row=>{const position=row.cells?.[1]?.textContent?.trim();if(position==='—')row.remove()});
   const markRepeatedAddresses=()=>document.querySelectorAll('#eventsBody [data-address]').forEach(button=>{const row=button.closest('tr');const repeated=[...(row?.querySelectorAll('.badge.watch')||[])].some(x=>/^×\d+/.test(x.textContent.trim())&&Number(x.textContent.trim().slice(1))>1);if(repeated){button.style.border='1px solid var(--red)';button.style.borderRadius='3px';button.style.padding='1px 4px';button.style.color='var(--red)'}});
-  const refresh=()=>{replaceUnknowns(document.body);hideUnknownPortfolioRows();markRepeatedAddresses()};
+  const refresh=root=>{replaceUnknowns(root||document.getElementById('eventsBody'));hideUnknownPortfolioRows();markRepeatedAddresses()};
   refresh();
-  // Coalesced: live trades change the DOM many times a second, and a pass over
-  // the whole page on every change froze the tab (blank page on iPhone).
-  let refreshTimer=0; const scheduleRefresh=()=>{if(refreshTimer)return;refreshTimer=setTimeout(()=>{refreshTimer=0;refresh()},250)};
-  new MutationObserver(scheduleRefresh).observe(document.body,{childList:true,subtree:true,characterData:true});
+  new MutationObserver(()=>refresh()).observe(document.getElementById('eventsBody'),{childList:true,subtree:true});
 })();
 </script>
 <script>
 (() => {
   const baseRender=window.render;
   const groupEvents=events=>{const groups=new Map();events.forEach(e=>{const key=[String(e.address||'').toLowerCase(),String(e.coin||''),e.side||'',e.position||'',e.action||''].join('|');const g=groups.get(key)||{...e,usd:0,sz:0,weighted:0,count:0,time:0};g.usd+=Number(e.usd)||0;g.sz+=Number(e.sz)||0;g.weighted+=(Number(e.px)||0)*(Number(e.sz)||0);g.count++;g.time=Math.max(g.time,Number(e.time)||0);g.whale=g.whale||false;g.aggregateTotal=Math.max(Number(g.aggregateTotal)||0,Number(e.aggregateTotal)||0);groups.set(key,g)});return [...groups.values()].map(g=>({...g,px:g.sz?g.weighted/g.sz:0,aggregateTotal:g.aggregateTotal||g.usd}));};
-  const renderGroupedEvents=()=>{const filter=state.filter;let list=groupEvents(state.events.filter(e=>e.action===ACTION_OPEN&&['LONG','SHORT'].includes(e.position)));if(filter!=='all')list=list.filter(e=>filter==='whale'?e.whale:e.side===filter);list=sortedEvents(list).slice(0,180);$('eventsBody').innerHTML=list.map(e=>{const p=e.position||'—',a=e.action||'—',pc=p==='LONG'?'buy':p==='SHORT'?'sell':'watch',ac=a===ACTION_OPEN?'buy':a===ACTION_CLOSE?'sell':'watch',address=String(e.address||'').toLowerCase(),count=e.count||1;return '<tr><td class="mono muted">'+time(e.time)+'</td><td><span class="badge '+e.side+'">'+(e.side==='buy'?'BUY':'SELL')+'</span>'+(e.whale?'<span class="badge watch" style="margin-left:5px">WHALE</span>':'')+'</td><td><span class="badge '+pc+'">'+esc(p)+'</span></td><td><span class="badge '+ac+'">'+esc(a)+'</span></td><td><button class="address-link" data-address="'+esc(address)+'" style="'+(count>1?'border:1px solid var(--red);border-radius:3px;padding:1px 4px;color:var(--red)':'')+'">'+short(address)+'</button>'+(count>1?'<span class="badge watch" style="margin-left:6px">×'+count+'</span>':'')+'</td><td><b>'+esc(String(e.coin||'').replace(/^xyz:/i,''))+'</b></td><td class="mono">$'+fmtNum(e.px)+'</td><td class="mono">'+fmtNum(e.sz)+'</td><td class="mono" style="color:'+(e.side==='buy'?'var(--green)':'var(--red)')+'">'+fmtUsd(e.usd)+'</td><td class="muted">'+(e.source==='userFills'?'точный':'discovery')+'</td></tr>'}).join('');$('eventsEmpty').style.display=list.length?'none':'block';};
+  const renderGroupedEvents=()=>{const filter=state.filter;let list=groupEvents(state.events).filter(e=>['LONG','SHORT'].includes(e.position)&&[ACTION_OPEN,ACTION_CLOSE].includes(e.action));if(filter!=='all')list=list.filter(e=>filter==='whale'?e.whale:e.side===filter);list=sortedEvents(list).slice(0,180);$('eventsBody').innerHTML=list.map(e=>{const p=e.position||'—',a=e.action||'—',pc=p==='LONG'?'buy':p==='SHORT'?'sell':'watch',ac=a===ACTION_OPEN?'buy':a===ACTION_CLOSE?'sell':'watch',address=String(e.address||'').toLowerCase(),count=e.count||1;return '<tr><td class="mono muted">'+time(e.time)+'</td><td><span class="badge '+e.side+'">'+(e.side==='buy'?'BUY':'SELL')+'</span>'+(e.whale?'<span class="badge watch" style="margin-left:5px">WHALE</span>':'')+'</td><td><span class="badge '+pc+'">'+esc(p)+'</span></td><td><span class="badge '+ac+'">'+esc(a)+'</span></td><td><button class="address-link" data-address="'+esc(address)+'" style="'+(count>1?'border:1px solid var(--red);border-radius:3px;padding:1px 4px;color:var(--red)':'')+'">'+short(address)+'</button>'+(count>1?'<span class="badge watch" style="margin-left:6px">×'+count+'</span>':'')+'</td><td><b>'+esc(String(e.coin||'').replace(/^xyz:/i,''))+'</b></td><td class="mono">$'+fmtNum(e.px)+'</td><td class="mono">'+fmtNum(e.sz)+'</td><td class="mono" style="color:'+(e.side==='buy'?'var(--green)':'var(--red)')+'">'+fmtUsd(e.usd)+'</td><td class="muted">точный</td></tr>'}).join('');$('eventsEmpty').style.display=list.length?'none':'block';};
   window.render=()=>{baseRender();renderGroupedEvents()}; renderGroupedEvents();
 })();
 </script>
@@ -230,8 +232,7 @@
 (() => {
   const cleanUnknownCells=()=>document.querySelectorAll('#eventsBody td').forEach(cell=>{if(cell.textContent.trim()==='—'){cell.textContent='';cell.setAttribute('aria-label','Нет данных');}});
   cleanUnknownCells();
-  let cleanTimer=0;
-  new MutationObserver(()=>{if(cleanTimer)return;cleanTimer=setTimeout(()=>{cleanTimer=0;cleanUnknownCells()},250)}).observe(document.getElementById('eventsBody'),{childList:true,subtree:true,characterData:true});
+  new MutationObserver(cleanUnknownCells).observe(document.getElementById('eventsBody'),{childList:true,subtree:true,characterData:true});
 })();
 </script>
 <script>
@@ -245,190 +246,497 @@
 (() => {
   const addMax=()=>{
     const specs=[['walletList','maxWallet','Самый большой объём адреса'],['bestTradesList','maxTrade','Самая большая позиция']];
-    specs.forEach(([id,marker,label])=>{const list=document.getElementById(id);if(!list)return;let box=document.getElementById(marker);if(!box){box=document.createElement('div');box.id=marker;box.className='autotrade-note';box.style.cssText='padding:8px 16px;border-bottom:1px solid var(--line);color:var(--amber);font-size:12px;font-weight:700';list.parentElement.insertBefore(box,list)};const amounts=[...list.querySelectorAll('.wallet-amount,.trade-usd')].map(x=>x.textContent.trim()).filter(Boolean);if(amounts.length&&box.textContent!==label+': '+amounts[0])box.textContent=label+': '+amounts[0]});
+    specs.forEach(([id,marker,label])=>{const list=document.getElementById(id);if(!list)return;let box=document.getElementById(marker);if(!box){box=document.createElement('div');box.id=marker;box.className='autotrade-note';box.style.cssText='padding:8px 16px;border-bottom:1px solid var(--line);color:var(--amber);font-size:12px;font-weight:700';list.parentElement.insertBefore(box,list)};const amounts=[...list.querySelectorAll('.wallet-amount,.trade-usd')].map(x=>x.textContent.trim()).filter(Boolean);if(amounts.length)box.textContent=label+': '+amounts[0]});
   };
-  addMax();let maxTimer=0;new MutationObserver(()=>{if(maxTimer)return;maxTimer=setTimeout(()=>{maxTimer=0;addMax()},250)}).observe(document.body,{childList:true,subtree:true});
+  addMax();new MutationObserver(addMax).observe(document.getElementById('walletList'),{childList:true,subtree:true});new MutationObserver(addMax).observe(document.getElementById('bestTradesList'),{childList:true,subtree:true});
 })();
 </script>
 <script>
-// Positions opened in the last 20 minutes that the address still holds.
-// Openings come from the exact userFills stream of the watchlist; each
-// candidate is confirmed against Hyperliquid clearinghouseState every 30 s,
-// so a position that has been closed disappears. Closed positions are not shown.
+/* Keep the live table smooth: the previous renderer rebuilt it twice per feed batch. */
 (() => {
-  const WINDOW=20*60*1000, POLL=30*1000, FRESH=90*1000, MAX_CHECK=20;
-  const grid=document.querySelector('.bottom-grid'); if(!grid)return;
-  const section=document.createElement('section'); section.className='panel'; section.style.gridColumn='1 / -1';
-  section.innerHTML='<div class="panel-head"><div><div class="panel-title">Открытые позиции за последние 20 минут</div><div class="panel-sub">только открытия, которые адрес ещё держит · МСК · проверка каждые 30 с</div></div><span class="badge watch" id="recentOpenCount">0</span></div><div class="scroll-list" id="recentOpenList"></div>';
-  grid.prepend(section);
-  const live=Object.create(null), tried=Object.create(null); let checking=false;
-  function openings(){
-    const cutoff=Date.now()-WINDOW, groups=new Map();
-    state.events.filter(e=>e.source==='userFills'&&e.action===ACTION_OPEN&&['LONG','SHORT'].includes(e.position)&&(Number(e.time)||0)>=cutoff).forEach(e=>{
-      const address=String(e.address||'').toLowerCase(), key=address+'|'+e.coin+'|'+e.position;
-      const g=groups.get(key)||{address,coin:String(e.coin),position:e.position,usd:0,sz:0,cost:0,first:Infinity,last:0,fills:0};
-      const sz=Math.abs(Number(e.sz)||0), px=Number(e.px)||0;
-      g.usd+=Number(e.usd)||0; g.sz+=sz; g.cost+=sz*px; g.fills++;
-      g.first=Math.min(g.first,Number(e.time)||0); g.last=Math.max(g.last,Number(e.time)||0);
-      groups.set(key,g);
+  const grouped = window.renderGroupedEvents;
+  const fullRenderer = window.render;
+  const updatePanels = () => {
+    $('kpiEvents').textContent = state.events.length.toLocaleString('ru-RU');
+    $('kpiVolume').textContent = fmtUsd(state.events.reduce((sum, event) => sum + (Number(event.usd) || 0), 0));
+    $('kpiWallets').textContent = Object.keys(state.wallets).length;
+    $('kpiTime').textContent = state.lastTime ? time(state.lastTime) : '—';
+    $('savedCount').textContent = state.manualAddresses.length + ' сохранено';
+    const wallets = Object.values(state.wallets).sort((a, b) => b.total - a.total).slice(0, 30);
+    $('discoveryCount').textContent = wallets.length;
+    $('walletList').innerHTML = wallets.length ? wallets.map(w =>
+      '<div class="wallet-row"><div class="wallet-main"><button class="address-link wallet" data-address="' + esc(w.address) + '">' + short(w.address) + '</button><div class="wallet-meta">' + w.events + ' исполнений · последний ' + time(w.last) + '</div></div><div class="wallet-amount">' + fmtUsd(w.total) + '</div><div class="wallet-actions"><button class="btn small" data-watch="' + esc(w.address) + '">' + (state.manualAddresses.includes(w.address) ? 'сохранено' : 'сохранить') + '</button></div></div>'
+    ).join('') : '<div class="empty"><strong>Discovery ещё не запущен</strong><span>Адреса появятся из live trades.</span></div>';
+    document.querySelectorAll('#walletList [data-watch]').forEach(button => button.onclick = () => addWatch(button.dataset.watch));
+    document.querySelectorAll('#walletList [data-address]').forEach(button => { button.onclick = () => openPortfolio(button.dataset.address); button.ondblclick = event => { event.preventDefault(); addWatch(button.dataset.address); }; });
+  };
+  window.render = () => { if (typeof grouped === 'function') { updatePanels(); grouped(); window.renderBottomInsights?.(); } else { fullRenderer(); } };
+  window.render();
+})();
+</script>
+<script>
+(() => {
+  const showLargestTradeAddress = () => {
+    const list = $('bestTradesList'), box = $('maxTrade');
+    if (!list || !box) return;
+    const first = list.querySelector('[data-address]');
+    if (!first) return;
+    const address = first.dataset.address;
+    let details = $('maxTradeAddress');
+    if (!details) { details = document.createElement('div'); details.id = 'maxTradeAddress'; details.className = 'autotrade-note'; details.style.cssText = 'padding:0 16px 8px;color:#aad5cc'; box.after(details); }
+    details.innerHTML = 'Адрес: <button class="address-link" data-address="' + esc(address) + '">' + short(address) + '</button> <button class="btn small" id="saveMaxTradeAddress">Сохранить</button>';
+    details.querySelector('[data-address]').onclick = () => openPortfolio(address);
+    details.querySelector('#saveMaxTradeAddress').onclick = () => addWatch(address);
+  };
+  new MutationObserver(showLargestTradeAddress).observe($('bestTradesList'), {childList:true, subtree:true});
+  showLargestTradeAddress();
+})();
+</script>
+<script>
+/* Portfolio details must contain only fills with an identified position/action. */
+(() => {
+  const baseOpenPortfolio = window.openPortfolio;
+  window.openPortfolio = address => {
+    const originalEvents = state.events;
+    state.events = originalEvents.filter(event => {
+      const sameAddress = String(event.address || '').toLowerCase() === String(address || '').toLowerCase();
+      if (!sameAddress) return true;
+      return event.source === 'userFills' && ['LONG', 'SHORT', 'SPOT'].includes(event.position) && event.action && event.action !== 'N/A';
     });
-    return [...groups.values()];
-  }
-  function held(g){
-    const snap=live[g.address]; if(!snap||Date.now()-snap.at>FRESH)return null;
-    return snap.positions.find(p=>p.coin===g.coin&&p.side===g.position)||false;
-  }
-  async function check(){
-    if(checking)return; checking=true;
-    try{
-      const addresses=[...new Set(openings().sort((a,b)=>b.last-a.last).map(g=>g.address))].slice(0,MAX_CHECK);
-      for(const address of addresses){
-        tried[address]=Date.now();
-        try{
-          const data=await post({type:'clearinghouseState',user:address});
-          const positions=(data.assetPositions||[]).map(x=>x.position||{}).filter(p=>Number(p.szi)).map(p=>({coin:String(p.coin),side:Number(p.szi)>0?'LONG':'SHORT',size:Math.abs(Number(p.szi)),entryPx:Number(p.entryPx)||0,value:Math.abs(Number(p.positionValue)||0),pnl:Number(p.unrealizedPnl)||0}));
-          live[address]={at:Date.now(),positions};
-        }catch(error){log('20 минут: нет данных по '+short(address)+': '+error.message,'warn')}
+    try { baseOpenPortfolio(address); }
+    finally { state.events = originalEvents; }
+  };
+})();
+</script>
+<script>
+/* Only positions with a genuine entry price belong in the portfolio summary. */
+(() => {
+  const previousOpenPortfolio = window.openPortfolio;
+  window.openPortfolio = address => {
+    previousOpenPortfolio(address);
+    const normalized = String(address || '').toLowerCase();
+    const groups = new Map();
+    state.events.filter(event => String(event.address || '').toLowerCase() === normalized && !/^xyz:/i.test(String(event.coin || '')) && ['LONG','SHORT'].includes(event.position) && [ACTION_OPEN,ACTION_CLOSE].includes(event.action)).forEach(event => {
+      const key = event.coin + '|' + event.position;
+      const group = groups.get(key) || {coin:event.coin, position:event.position, usd:0, buy:0, sell:0, openSize:0, openValue:0, close:0, last:0};
+      const usd = Number(event.usd) || 0, size = Number(event.sz) || 0;
+      group.usd += usd; group.last = Math.max(group.last, Number(event.time) || 0);
+      if (event.side === 'buy') group.buy += usd; else group.sell += usd;
+      if (event.action === ACTION_OPEN) { group.openSize += size; group.openValue += size * (Number(event.px) || 0); group.open = Math.max(group.open || 0, Number(event.time) || 0); }
+      if (event.action === ACTION_CLOSE) group.close = Math.max(group.close, Number(event.time) || 0);
+      groups.set(key, group);
+    });
+    const rows = [...groups.values()].filter(group => group.openSize > 0).map(group => { const matching = state.events.filter(event => String(event.address || '').toLowerCase() === normalized && event.coin === group.coin); const last = matching.sort((a,b) => Number(b.time||0)-Number(a.time||0))[0]; group.entry = group.openValue / group.openSize; group.market = Number(last?.px) || group.entry; group.change = (group.market / group.entry - 1) * (group.position === 'LONG' ? 100 : -100); group.pnl = group.position === 'LONG' ? (group.market-group.entry)*group.openSize : (group.entry-group.market)*group.openSize; return group; }).sort((a,b) => b.pnl - a.pnl);
+    $('portfolioHoldings').innerHTML = rows.map(group => '<tr><td><b>' + esc(group.coin) + '</b></td><td><span class="badge ' + (group.position === 'LONG' ? 'buy' : 'sell') + '">' + group.position + '</span></td><td>' + (group.close ? 'ЗАКРЫТА' : 'ОТКРЫТА') + '</td><td class="mono">' + fmtUsd(group.usd) + '</td><td class="mono">$' + fmtNum(group.entry) + '</td><td class="mono">$' + fmtNum(group.market) + '</td><td class="mono" style="color:' + (group.change >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (group.change >= 0 ? '+' : '') + group.change.toFixed(2) + '%</td><td class="mono" style="color:' + (group.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (group.pnl >= 0 ? '+' : '') + fmtUsd(group.pnl) + '</td><td class="mono">' + time(group.open) + '</td><td class="mono">' + (group.close ? time(group.close) : '') + '</td></tr>').join('') || '<tr><td colspan="10" class="muted">Нет позиций с определённой ценой входа</td></tr>';
+    const best = rows[0]; $('portfolioBestPnl').innerHTML = best ? '<b>Лучшая позиция:</b> ' + esc(best.coin) + ' ' + best.position + ' · вход $' + fmtNum(best.entry) + ' · рынок $' + fmtNum(best.market) + ' · <span style="color:' + (best.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (best.pnl >= 0 ? '+' : '') + fmtUsd(best.pnl) + ' (' + (best.change >= 0 ? '+' : '') + best.change.toFixed(2) + '%)</span> · открыта ' + timeMsk(best.open) : '';
+    document.querySelectorAll('#portfolioFills tr').forEach(row => { if (/^xyz:/i.test(row.cells?.[4]?.textContent?.trim() || '')) row.remove(); });
+  };
+})();
+</script>
+<script>
+/* Historical PnL is loaded on demand so the live radar stays responsive. */
+(() => {
+  const history = new Map();
+  const FOUR_MONTHS = 90 * 24 * 60 * 60 * 1000;
+  const TWO_DAYS = 2 * 24 * 60 * 60 * 1000;
+  const valid = value => /^0x[0-9a-f]{40}$/i.test(String(value || ''));
+  const add = address => {
+    const normalized = String(address || '').toLowerCase();
+    if (!valid(normalized) || state.manualAddresses.includes(normalized)) return;
+    addWatch(normalized);
+  };
+  const action = address => '<button class="btn small" data-pnl-save="' + esc(address) + '">' + (state.manualAddresses.includes(String(address).toLowerCase()) ? 'Сохранён' : 'Сохранить') + '</button>';
+  const bind = root => root.querySelectorAll('[data-pnl-save]').forEach(button => { const address = button.dataset.pnlSave; if (state.manualAddresses.includes(String(address).toLowerCase())) button.disabled = true; button.onclick = () => { add(address); button.textContent = 'Сохранён'; button.disabled = true; }; });
+  const bindFollow = root => root.querySelectorAll('[data-pnl-follow]').forEach(button => button.onclick = () => { add(button.dataset.pnlFollow); const field = $('tradeAddresses'); if (field) { const current = field.value.split(/[\s,]+/).filter(Boolean); if (!current.map(x => x.toLowerCase()).includes(button.dataset.pnlFollow)) field.value = [...current, button.dataset.pnlFollow].slice(0, 2).join(', '); field.scrollIntoView({behavior:'smooth', block:'center'}); } });
+  const render = () => {
+    const now = Date.now(), cutoff = now - FOUR_MONTHS, fresh = now - TWO_DAYS;
+    const closed = [];
+    const active = [];
+    history.forEach((item, address) => {
+      const fills = item.fills.filter(fill => Number(fill.time || 0) >= cutoff);
+      const closedFills = fills.filter(fill => Number.isFinite(Number(fill.closedPnl)) && Number(fill.closedPnl) !== 0);
+      const closedPnl = closedFills.reduce((sum, fill) => sum + Number(fill.closedPnl), 0);
+      // Include an address only when it closed at least one position and none
+      // of its closed positions was negative during the selected three months.
+      if (closedFills.length && closedFills.every(fill => Number(fill.closedPnl) >= 0)) closed.push({address, pnl:closedPnl, fills:closedFills.length, last:Math.max(...closedFills.map(fill => Number(fill.time || 0)), 0)});
+      const positions = item.positions.filter(position => Math.abs(Number(position.szi || 0)) > 0 && Number(position.unrealizedPnl || 0) > 0);
+      const openPnl = positions.reduce((sum, position) => sum + Number(position.unrealizedPnl || 0), 0);
+      const hasFresh = fills.some(fill => Number(fill.time || 0) >= fresh);
+      if (openPnl > 0 && hasFresh) active.push({address, pnl:openPnl, positions, last:Math.max(...fills.map(fill => Number(fill.time || 0)), 0)});
+    });
+    closed.sort((a,b) => b.pnl - a.pnl); active.sort((a,b) => b.pnl - a.pnl);
+    $('closedPnlCount').textContent = closed.length;
+    const bestOpen = active[0], bestClosed = closed[0];
+    const best = !bestClosed || (bestOpen && bestOpen.pnl > bestClosed.pnl) ? bestOpen : bestClosed;
+    $('bestPnlSummary').innerHTML = best ? '<b>Самый прибыльный:</b> <button class="address-link" data-best-pnl-address="' + esc(best.address) + '">' + short(best.address) + '</button> · <span style="color:var(--green);font-size:16px;font-weight:700">+' + fmtUsd(best.pnl) + '</span> — наибольшая сумма плюса за период.' : 'Самый прибыльный адрес появится после расчёта PnL.';
+    $('bestPnlSummary').querySelector('[data-best-pnl-address]')?.addEventListener('click', event => { const address = event.currentTarget.dataset.bestPnlAddress; openPortfolio(address); });
+    $('openPnlList').innerHTML = active.length ? active.slice(0,20).map(row => '<div class="trade-row"><div class="trade-line"><div class="trade-main"><button class="address-link trade-address" data-address="' + esc(row.address) + '">' + short(row.address) + '</button><span class="badge buy">ОТКРЫТА</span></div><b class="trade-usd" style="color:var(--green)">+' + fmtUsd(row.pnl) + '</b></div><div class="trade-meta">' + row.positions.map(position => esc(position.coin) + ' ' + (Number(position.szi) > 0 ? 'LONG' : 'SHORT') + ' · +' + fmtUsd(Number(position.unrealizedPnl || 0))).join(' · ') + '<br>' + action(row.address) + '</div></div>').join('') : '<div class="empty"><strong>Нет прибыльных активных позиций</strong><span>Нужны свежие исполнения за 2 дня.</span></div>';
+    $('closedPnlList').innerHTML = closed.length ? closed.slice(0,20).map((row,index) => '<div class="trade-row"><div class="trade-line"><div class="trade-main"><span class="badge buy">#' + (index + 1) + '</span><button class="address-link trade-address" data-address="' + esc(row.address) + '">' + short(row.address) + '</button></div><b class="trade-usd" style="color:var(--green)">+' + fmtUsd(row.pnl) + '</b></div><div class="trade-meta">Все ' + row.fills + ' закрытий за 3 месяца — без минусовых · последнее ' + timeMsk(row.last) + '<br>' + action(row.address) + '</div></div>').join('') : '<div class="empty"><strong>Нет адресов без минусовых закрытий</strong><span>За последние 3 месяца не найдено подходящих закрытых позиций.</span></div>';
+    bind($('openPnlList')); bind($('closedPnlList')); bindFollow($('openPnlList')); bindFollow($('closedPnlList'));
+  };
+  const refreshHistory = async (limit = 30) => {
+    const ranked = Object.values(state.wallets).sort((a,b) => (Number(b.total)||0) - (Number(a.total)||0)).map(item => item.address);
+    const addresses = [...new Set([...state.manualAddresses, ...ranked])].filter(valid).slice(0, limit);
+    const button = $('refreshPnlBtn'); button.disabled = true; button.textContent = 'Загрузка…';
+    try {
+      for (const address of addresses) {
+        await new Promise(resolve => setTimeout(resolve, 450));
+        let fillsData = [], stateData = {assetPositions:[]};
+        try { fillsData = await post({type:'userFillsByTime', user:address, startTime:Date.now()-FOUR_MONTHS, endTime:Date.now()}); } catch (error) { if (!/HTTP 429/.test(error.message)) throw error; await new Promise(resolve => setTimeout(resolve, 1800)); continue; }
+        await new Promise(resolve => setTimeout(resolve, 450));
+        try { stateData = await post({type:'clearinghouseState', user:address}); } catch (error) { if (!/HTTP 429/.test(error.message)) throw error; }
+        history.set(address, {fills:Array.isArray(fillsData) ? fillsData : [], positions:(stateData.assetPositions || []).map(item => item.position || {})});
+        render();
       }
-    }finally{checking=false;draw()}
-  }
-  function draw(){
-    const list=$('recentOpenList'), count=$('recentOpenCount'); if(!list)return;
-    const all=openings(), rows=all.map(g=>({...g,now:held(g)})).filter(g=>g.now).sort((a,b)=>b.last-a.last);
-    const pending=all.filter(g=>held(g)===null).length;
-    count.textContent=rows.length;
-    list.innerHTML=rows.length?rows.map(g=>'<div class="trade-row"><div class="trade-line"><div class="trade-main"><button class="address-link trade-address" data-address="'+esc(g.address)+'">'+short(g.address)+'</button><span class="badge '+(g.position==='LONG'?'buy':'sell')+'">'+g.position+'</span><b>'+esc(g.coin)+'</b></div><b class="trade-usd">'+fmtUsd(g.usd)+'</b></div><div class="trade-meta wrap">Открыта '+time(g.first)+' МСК'+(g.fills>1?' · исполнений: '+g.fills+', последнее '+time(g.last):'')+' · цена входа $'+fmtNum(g.sz?g.cost/g.sz:0)+' · сейчас держит <span class="position-size">'+fmtNum(g.now.size)+'</span> ('+fmtUsd(g.now.value)+', PnL '+fmtUsd(g.now.pnl)+')</div></div>').join('')
-      :'<div class="empty"><strong>'+(pending?'Проверяю '+pending+' открыти'+(pending===1?'е':'я')+'…':'Нет открытых позиций за 20 минут')+'</strong><span>Берутся точные открытия адресов из watchlist, пока идёт анализ.</span></div>';
-    list.querySelectorAll('[data-address]').forEach(b=>b.onclick=()=>openPortfolio(b.dataset.address));
-  }
-  draw(); check(); setInterval(check,POLL);
-  // A new opening is confirmed within a few seconds (an address is asked at most every 10 s).
-  setInterval(()=>{if(openings().some(g=>{const snap=live[g.address];return (!snap||g.last>snap.at)&&!(tried[g.address]>Date.now()-10000)}))check(); draw()},3000);
+      render(); log('PnL обновлён: адресов '+addresses.length);
+    } catch (error) { log('Не удалось загрузить PnL: '+error.message, 'warn'); }
+    finally { button.disabled = false; button.textContent = 'Обновить 3 месяца'; }
+  };
+  window.refreshPnlHistory = refreshHistory;
+  $('refreshPnlBtn').onclick = () => refreshHistory(100);
 })();
 </script>
 <script>
-// Closed positions: every ЗАКРЫТИЕ of a watched address is kept here (in this
-// browser, up to 2000 fills), grouped per address/coin/side and close burst,
-// with closed PnL and a total. Addresses can be saved one by one or all at once.
 (() => {
-  const KEY='hl-radar-closed-v1', MAX=2000, BURST=5*60*1000;
-  const table=document.querySelector('.content .table-wrap')?.closest('section'); if(!table)return;
-  const section=document.createElement('section'); section.className='panel'; section.id='closedPanel'; section.style.marginTop='14px';
-  section.innerHTML='<div class="panel-head closed-head"><div><div class="panel-title">Закрытые позиции</div><div class="panel-sub">закрытия адресов из watchlist · сохраняются · МСК</div></div><div class="closed-actions"><button class="btn small" id="closedSaveAll">Сохранить все адреса</button><button class="btn small" id="closedClear">Очистить</button><span class="badge watch" id="closedCount">0</span></div></div>'
-    +'<div class="table-wrap" style="max-height:380px"><table class="table"><thead><tr><th>Время</th><th>Позиция</th><th>Адрес</th><th>Актив</th><th>Цена</th><th>Размер</th><th>USD</th><th>PnL</th><th></th></tr></thead><tbody id="closedBody"></tbody></table>'
-    +'<div class="empty" id="closedEmpty"><strong>Закрытий пока нет</strong><span>Сюда попадают ЗАКРЫТИЕ позиций адресов из watchlist.</span></div></div>'
-    +'<div class="closed-total" id="closedTotal"></div>';
-  table.after(section);
-  let fills=[]; try{fills=JSON.parse(localStorage.getItem(KEY)||'[]')}catch{fills=[]}
-  if(!Array.isArray(fills))fills=[];
-  const seen=new Set(fills.map(f=>f.id));
-  let saveTimer=0, drawTimer=0;
-  const persist=()=>{if(saveTimer)return;saveTimer=setTimeout(()=>{saveTimer=0;try{localStorage.setItem(KEY,JSON.stringify(fills.slice(0,MAX)))}catch{}},2000)};
-  function add(e){
-    if(e.action!==ACTION_CLOSE||!['LONG','SHORT'].includes(e.position))return false;
-    const pnl=e.pnl===null||e.pnl===undefined||e.pnl===''?null:Number(e.pnl);
-    const f={address:String(e.address||'').toLowerCase(),coin:String(e.coin||''),position:e.position,px:Number(e.px)||0,sz:Math.abs(Number(e.sz)||0),usd:Number(e.usd)||0,pnl:Number.isFinite(pnl)?pnl:null,time:Number(e.time)||Date.now()};
-    f.id=[e.hash||'',f.address,f.coin,f.time,f.sz,f.px].join('|'); if(seen.has(f.id))return false;
-    seen.add(f.id); fills.unshift(f);
-    if(fills.length>MAX){fills.sort((a,b)=>b.time-a.time);fills.length=MAX}
-    return true;
-  }
-  function groups(){
-    const out=[], open=new Map();
-    fills.slice().sort((a,b)=>a.time-b.time).forEach(f=>{
-      const key=f.address+'|'+f.coin+'|'+f.position, g=open.get(key);
-      if(g&&f.time-g.last<=BURST){g.sz+=f.sz;g.usd+=f.usd;g.cost+=f.sz*f.px;if(f.pnl!==null){g.pnl=(g.pnl||0)+f.pnl;g.hasPnl=true}g.last=f.time;g.count++}
-      else{const n={...f,cost:f.sz*f.px,last:f.time,count:1,hasPnl:f.pnl!==null,pnl:f.pnl||0};open.set(key,n);out.push(n)}
-    });
-    return out.sort((a,b)=>b.last-a.last);
-  }
-  const when=t=>{const d=new Date(t),today=new Date();return (d.toDateString()===today.toDateString()?'':new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit'}).format(d)+' ')+time(t)};
-  const money=v=>(v>0?'+':v<0?'−':'')+fmtUsd(Math.abs(v));
-  function draw(){
-    const rows=groups(), saved=new Set(state.manualAddresses);
-    $('closedCount').textContent=rows.length;
-    $('closedEmpty').style.display=rows.length?'none':'block';
-    $('closedBody').innerHTML=rows.slice(0,300).map(g=>'<tr><td class="mono muted">'+when(g.last)+'</td><td><span class="badge '+(g.position==='LONG'?'buy':'sell')+'">'+g.position+'</span></td><td><button class="address-link" data-address="'+esc(g.address)+'" title="Открыть портфель">'+short(g.address)+'</button></td><td><b>'+esc(g.coin.replace(/^[a-z0-9]+:/i,''))+'</b></td><td class="mono">$'+fmtNum(g.sz?g.cost/g.sz:0)+'</td><td class="mono">'+fmtNum(g.sz)+(g.count>1?' <span class="muted">('+g.count+')</span>':'')+'</td><td class="mono">'+fmtUsd(g.usd)+'</td><td class="mono" style="color:'+(!g.hasPnl?'inherit':g.pnl>=0?'var(--green)':'var(--red)')+'">'+(g.hasPnl?money(g.pnl):'')+'</td><td>'+(saved.has(g.address)?'<span class="muted">сохранён</span>':'<button class="btn small" data-save-closed="'+esc(g.address)+'">сохранить</button>')+'</td></tr>').join('');
-    const withPnl=rows.filter(g=>g.hasPnl), total=withPnl.reduce((s,g)=>s+g.pnl,0), win=withPnl.filter(g=>g.pnl>0).reduce((s,g)=>s+g.pnl,0), loss=withPnl.filter(g=>g.pnl<0).reduce((s,g)=>s+g.pnl,0);
-    $('closedTotal').innerHTML=rows.length?'<span>Общий PnL закрытых позиций · '+withPnl.length+' поз. · прибыль <span style="color:var(--green)">'+money(win)+'</span> · убыток <span style="color:var(--red)">'+money(loss)+'</span></span><b style="color:'+(total>=0?'var(--green)':'var(--red)')+'">'+money(total)+'</b>':'';
-  }
-  const schedule=()=>{if(drawTimer)return;drawTimer=setTimeout(()=>{drawTimer=0;draw()},400)};
-  state.events.forEach(e=>{if(e.source==='userFills')add(e)}); persist(); draw();
-  const prevRecord=record; record=function(e){prevRecord(e); if(e&&e.source==='userFills'&&add(e)){persist();schedule()}};
-  section.addEventListener('click',ev=>{const b=ev.target.closest('[data-save-closed]'); if(!b)return; ev.preventDefault(); addWatch(b.dataset.saveClosed); draw()});
-  $('closedSaveAll').onclick=()=>{const todo=[...new Set(groups().map(g=>g.address))].filter(a=>!state.manualAddresses.includes(a)); todo.forEach(a=>addWatch(a)); draw(); toast('Адреса сохранены',todo.length?'Добавлено в watchlist: '+todo.length:'Все адреса уже сохранены','buy')};
-  $('closedClear').onclick=()=>{fills=[];seen.clear();try{localStorage.removeItem(KEY)}catch{};draw()};
-  window.closedPnlByAddress=()=>{const out={};groups().forEach(g=>{if(g.hasPnl)out[g.address]=(out[g.address]||0)+g.pnl});return out};
+  const hideXyz = () => document.querySelectorAll('#eventsBody tr,#bestTradesList .trade-row,#portfolioList .trade-row,#walletList .wallet-row').forEach(row => { if (/\bxyz:/i.test(row.textContent || '')) row.remove(); });
+  new MutationObserver(hideXyz).observe(document.body, {childList:true, subtree:true});
+  setInterval(hideXyz, 1000);
+  hideXyz();
+  const renderLeader = (listId, markerId, label) => {
+    const list = $(listId); if (!list) return;
+    const leader = Object.values(state.wallets).sort((a,b) => (Number(b.total)||0)-(Number(a.total)||0))[0];
+    if (!leader) return;
+    let box = $(markerId);
+    if (!box) { const head = list.parentElement.querySelector('.panel-head'); if (!head) return; box = document.createElement('div'); box.id = markerId; box.className = 'autotrade-note'; box.style.cssText = 'padding:0 16px 8px;color:#aad5cc'; head.after(box); }
+    const saved = state.manualAddresses.includes(String(leader.address).toLowerCase());
+    box.innerHTML = label + ': <button class="address-link" data-address="' + esc(leader.address) + '">' + short(leader.address) + '</button> <button class="btn small" data-save-leader="' + esc(leader.address) + '"' + (saved ? ' disabled' : '') + '>' + (saved ? 'Сохранён' : 'Сохранить') + '</button>';
+    box.querySelector('[data-address]').onclick = () => openPortfolio(leader.address);
+    box.querySelector('[data-save-leader]').onclick = () => { addWatch(leader.address); showLeaders(); };
+  };
+  const showLeaders = () => { renderLeader('walletList','maxWalletAddress','Адрес наибольшего объёма'); renderLeader('portfolioList','maxPortfolioAddress','Адрес наибольшего объёма'); };
+  new MutationObserver(showLeaders).observe($('walletList'), {childList:true, subtree:true});
+  new MutationObserver(showLeaders).observe($('portfolioList'), {childList:true, subtree:true});
+  showLeaders();
+  const existingStart = window.start;
+  window.start = async () => { await existingStart(); setTimeout(() => window.refreshPnlHistory?.(30), 1200); };
+  const startButton = $('toggleBtn');
+  startButton.onclick = async () => {
+    if (state.running) return window.stop();
+    startButton.disabled = true;
+    try { await window.start(); } catch (error) { log('Не удалось запустить радар: ' + error.message, 'warn'); }
+    finally { startButton.disabled = false; }
+  };
 })();
-
-// Entry price in the address portfolio ("Активы и позиции"), taken from
-// Hyperliquid. A row the API does not confirm as an open position is hidden.
+</script>
+<style>
+  .bottom-grid > .panel{min-width:0}
+  #openPnlList .trade-row,#closedPnlList .trade-row{min-width:0;overflow:hidden}
+  #openPnlList .trade-line,#closedPnlList .trade-line{align-items:flex-start}
+  #openPnlList .trade-main,#closedPnlList .trade-main{min-width:0}
+  #openPnlList .trade-meta,#closedPnlList .trade-meta{white-space:normal;overflow-wrap:anywhere;line-height:1.55}
+  #openPnlList .trade-usd,#closedPnlList .trade-usd{flex:none;margin-left:8px}
+  .bottom-grid > section:has(#portfolioList){grid-column:1/-1}
+  #portfolioList .trade-row{min-width:0;overflow-wrap:anywhere}
+</style>
+<style>
+  #radarLeaders{display:flex;flex-wrap:wrap;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);background:#0a181d}
+  #radarLeaders .leader-card{flex:1 1 220px;min-width:0;padding:8px 10px;border:1px solid #29434a;border-radius:5px;color:#a9c8c0;font-size:11px}
+  #radarLeaders b{display:block;color:var(--amber);font-size:10px;text-transform:uppercase;margin-bottom:4px}
+</style>
+<script>
 (() => {
-  const body=$('portfolioHoldings'); if(!body)return;
-  const headRow=body.closest('table')?.querySelector('thead tr');
-  if(headRow&&headRow.cells.length>=3){const th=document.createElement('th');th.textContent='Цена входа';headRow.insertBefore(th,headRow.cells[3]||null)}
-  const bare=c=>String(c||'').replace(/^[a-z0-9]+:/i,'').toUpperCase();
-  async function enrich(address){
-    [...body.rows].forEach(row=>{if(row.cells.length===1){row.cells[0].colSpan=9;return}if(!row.dataset.price){const td=document.createElement('td');td.className='mono';td.textContent='…';row.insertBefore(td,row.cells[3]||null);row.dataset.price='1'}});
-    const dexes=[...new Set(state.events.filter(e=>String(e.address||'').toLowerCase()===address&&String(e.coin||'').includes(':')).map(e=>String(e.coin).split(':')[0]))];
-    let positions=null;
-    try{
-      const states=await Promise.all([post({type:'clearinghouseState',user:address}),...dexes.map(dex=>post({type:'clearinghouseState',user:address,dex}))]);
-      positions=new Map();
-      states.forEach(st=>(st?.assetPositions||[]).forEach(x=>{const p=x.position||{},szi=Number(p.szi);if(szi)positions.set(bare(p.coin)+'|'+(szi>0?'LONG':'SHORT'),Number(p.entryPx)||0)}));
-    }catch(error){log('Цена входа: нет ответа Hyperliquid по '+short(address)+': '+error.message,'warn')}
-    if(state.portfolioAddress!==address)return;
-    [...body.rows].forEach(row=>{
-      if(row.cells.length<4)return;
-      const cell=row.cells[3];
-      if(!positions){cell.textContent='';return}
-      const px=positions.get(bare(row.cells[0].textContent.trim())+'|'+row.cells[1].textContent.trim());
-      if(px)cell.textContent='$'+fmtNum(px); else row.remove();
-    });
-    if(positions&&!body.rows.length)body.innerHTML='<tr><td colspan="9" class="muted">Открытых позиций по данным Hyperliquid нет</td></tr>';
-  }
-  const baseOpen=openPortfolio;
-  openPortfolio=function(address){baseOpen(address);const a=String(address||'').toLowerCase();if(state.portfolioAddress===a)enrich(a)};
+  const header = document.querySelector('#eventsBody')?.closest('table')?.querySelector('thead tr');
+  if (header && !header.querySelector('[data-sort="deviation"]')) { const th = document.createElement('th'); th.innerHTML = '<button class="sort-btn" data-sort="deviation">Отклонение от рынка ↓</button>'; header.appendChild(th); }
+  const market = new Map();
+  const refreshDeviation = () => { market.clear(); document.querySelectorAll('#eventsBody tr').forEach(row => {
+    const cells = row.cells; if (!cells || cells.length < 9) return;
+    const coin = cells[5]?.textContent.trim(), position = cells[2]?.textContent.trim(), price = Number((cells[6]?.textContent || '').replace(/[^0-9.-]/g,'')), usd = Number((cells[8]?.textContent || '').replace(/[^0-9.-]/g,''));
+    const key = coin + '|' + position; if (!market.has(key) && price) market.set(key, price);
+    const px = market.get(key); if (!px || !price || !['LONG','SHORT'].includes(position)) return;
+    const pct = (px / price - 1) * (position === 'LONG' ? 100 : -100); const dollars = (usd || 0) * pct / 100; const cell = cells[11] || row.insertCell(-1); const text = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '% · ' + (dollars >= 0 ? '+' : '') + fmtUsd(dollars); cell.className = 'mono'; cell.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)'; if (cell.textContent !== text) cell.textContent = text;
+  }); };
+  new MutationObserver(refreshDeviation).observe(document.getElementById('eventsBody'), {childList:true, subtree:true});
+  refreshDeviation();
 })();
 </script>
 <script>
-// Total PnL of the watchlist: unrealised PnL of every open position (asked
-// from Hyperliquid every 60 s), the closed PnL kept in «Закрытые позиции»,
-// and their sum, in total and per address.
+/* Address chips provide a safe one-click delete beside each saved address. */
 (() => {
-  const POLL=60*1000, WORKERS=3;
-  const closed=document.getElementById('closedPanel'); if(!closed)return;
-  const section=document.createElement('section'); section.className='panel'; section.id='pnlPanel'; section.style.marginTop='14px';
-  section.innerHTML='<div class="panel-head closed-head"><div><div class="panel-title">Общий PnL</div><div class="panel-sub" id="pnlSub">адреса из watchlist · открытые позиции по данным Hyperliquid · обновление каждые 60 с</div></div><div class="closed-actions"><button class="btn small" id="pnlRefresh">Обновить</button><span class="badge watch" id="pnlCount">0</span></div></div>'
-    +'<div class="pnl-kpis" id="pnlKpis"></div>'
-    +'<div class="table-wrap" style="max-height:360px"><table class="table"><thead><tr><th>Адрес</th><th>Открытых позиций</th><th>Открытый PnL</th><th>Закрытый PnL</th><th>Итого</th></tr></thead><tbody id="pnlBody"></tbody></table>'
-    +'<div class="empty" id="pnlEmpty"><strong>Добавьте адреса в watchlist</strong><span>PnL считается по сохранённым адресам.</span></div></div>';
-  closed.after(section);
-  const snaps=Object.create(null), tried=Object.create(null); let running=false, updatedAt=0;
-  const money=v=>(v>0?'+':v<0?'−':'')+fmtUsd(Math.abs(v));
-  const color=v=>v>0?'var(--green)':v<0?'var(--red)':'inherit';
-  async function refresh(){
-    if(running)return; running=true;
-    const addresses=state.manualAddresses.slice(0,100);
-    Object.keys(snaps).forEach(a=>{if(!addresses.includes(a))delete snaps[a]});
-    let next=0;
-    const worker=async()=>{while(next<addresses.length){const address=addresses[next++];tried[address]=Date.now();try{const d=await post({type:'clearinghouseState',user:address});const positions=(d.assetPositions||[]).map(x=>x.position||{}).filter(p=>Number(p.szi));snaps[address]={count:positions.length,pnl:positions.reduce((s,p)=>s+(Number(p.unrealizedPnl)||0),0),at:Date.now()}}catch(error){log('Общий PnL: нет данных по '+short(address)+': '+error.message,'warn')}}};
-    try{await Promise.all(Array.from({length:Math.min(WORKERS,addresses.length)},worker));updatedAt=Date.now()}finally{running=false;draw()}
+  const field = $('addresses');
+  const list = document.createElement('div');
+  list.id = 'savedAddressChips';
+  list.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;max-height:118px;overflow:auto';
+  field.after(list);
+  const draw = () => {
+    const addresses = state.manualAddresses || [];
+    list.innerHTML = addresses.map(address => '<span class="badge watch" style="text-transform:none"><button class="address-link" data-chip-address="' + esc(address) + '" style="text-decoration:none">' + short(address) + '</button><button type="button" data-remove-address="' + esc(address) + '" title="Удалить адрес" style="border:0;background:transparent;color:var(--red);font-size:16px;line-height:12px;padding:0 0 0 5px">×</button></span>').join('');
+    list.querySelectorAll('[data-chip-address]').forEach(button => button.onclick = () => openPortfolio(button.dataset.chipAddress));
+    list.querySelectorAll('[data-remove-address]').forEach(button => button.onclick = () => {
+      const address = button.dataset.removeAddress;
+      if (!confirm('Вы точно хотите удалить этот адрес?')) return;
+      state.manualAddresses = state.manualAddresses.filter(item => item.toLowerCase() !== address.toLowerCase());
+      field.value = state.manualAddresses.join('\n');
+      save(); window.render?.(); draw();
+      log('Адрес удалён: ' + short(address));
+    });
+  };
+  const originalSaveWatchlist = window.saveWatchlist;
+  window.saveWatchlist = function() { const result = originalSaveWatchlist.apply(this, arguments); draw(); return result; };
+  const originalAddWatch = window.addWatch;
+  window.addWatch = function() { const result = originalAddWatch.apply(this, arguments); draw(); return result; };
+  $('saveWatchlistBtn').onclick = () => window.saveWatchlist();
+  draw();
+})();
+</script>
+<script>
+// Safe public entry point used by the Start button and the manual refresh.
+if (typeof window.refreshPnlHistory !== 'function') {
+  window.refreshPnlHistory = async () => {
+    const button = document.getElementById('refreshPnlBtn');
+    if (button) button.click();
+  };
+}
+</script>
+<style>
+  /* The portfolio panel is intentionally wide: an address and both PnL values
+     must remain readable without truncation. */
+  .bottom-grid > section:has(#portfolioList){grid-column:1 / -1}
+  #portfolioPnlLeaders{display:grid;grid-template-columns:repeat(3,minmax(240px,1fr));gap:10px;padding:0 16px 10px;border-bottom:1px solid var(--line)}
+  .portfolio-pnl-card{min-width:0;padding:10px 12px;border:1px solid #29434a;border-radius:6px;background:#0a181d}
+  .portfolio-pnl-card strong{display:block;color:var(--amber);font-size:11px;text-transform:uppercase;margin-bottom:5px}
+  .portfolio-pnl-card .address-link{max-width:100%;overflow-wrap:anywhere}
+  .portfolio-pnl-card .pnl-value{color:var(--green);font-weight:800;margin-left:6px}
+  .wallet-pnl{display:grid;gap:2px;margin-top:5px;font-size:11px;line-height:1.35;color:#a9c8c0}
+  .wallet-pnl b{color:var(--green);font-weight:700}
+  .portfolio-pnl-card .leader-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:5px}.portfolio-pnl-card .leader-line:first-of-type{margin-top:0}.portfolio-pnl-card .leader-rank{color:var(--muted);font-size:10px}
+  @media (max-width:900px){#portfolioPnlLeaders{grid-template-columns:1fr}}@media (max-width:680px){#portfolioPnlLeaders{grid-template-columns:1fr}}
+</style>
+<script>
+/* Keep PnL information grouped in the same order everywhere: open first,
+   closed second.  Values come from the calculated PnL blocks, so no extra
+   network requests or feed work are introduced. */
+(() => {
+  const cleanAddress = value => String(value || '').toLowerCase();
+  const pnlRows = id => {
+    const values = new Map();
+    document.querySelectorAll('#' + id + ' .trade-row').forEach(row => {
+      const address = cleanAddress(row.querySelector('[data-address]')?.dataset.address);
+      const value = row.querySelector('.trade-usd')?.textContent.trim();
+      if (address && value) values.set(address, value);
+    });
+    return values;
+  };
+  const saveButton = address => {
+    const saved = state.manualAddresses.includes(cleanAddress(address));
+    return '<button class="btn small" data-portfolio-pnl-save="' + esc(address) + '"' + (saved ? ' disabled' : '') + '>' + (saved ? 'Сохранён' : 'Сохранить') + '</button>';
+  };
+  const bindSave = root => root.querySelectorAll('[data-portfolio-pnl-save]').forEach(button => {
+    button.onclick = () => {
+      addWatch(button.dataset.portfolioPnlSave);
+      button.textContent = 'Сохранён';
+      button.disabled = true;
+    };
+  });
+  const update = () => {
+    const open = pnlRows('openPnlList');
+    const closed = pnlRows('closedPnlList');
+    const panel = document.getElementById('portfolioList')?.closest('section.panel');
+    const head = panel?.querySelector('.panel-head');
+    if (!panel || !head) return;
+    let leaders = document.getElementById('portfolioPnlLeaders');
+    if (!leaders) { leaders = document.createElement('div'); leaders.id = 'portfolioPnlLeaders'; head.after(leaders); }
+    const first = id => document.querySelector('#' + id + ' .trade-row [data-address]')?.dataset.address || '';
+    const bestOpen = first('openPnlList'), bestClosed = first('closedPnlList');
+    const card = (title, address, value, empty) => '<div class="portfolio-pnl-card"><strong>' + title + '</strong>' + (address ? '<button class="address-link" data-portfolio-pnl-address="' + esc(address) + '">' + esc(address) + '</button><span class="pnl-value">' + esc(value || '') + '</span> ' + saveButton(address) : '<span class="muted">' + empty + '</span>') + '</div>';
+    leaders.innerHTML = card('Лучший открытый PnL', bestOpen, open.get(cleanAddress(bestOpen)), 'После расчёта появится адрес.') + card('Лучший закрытый PnL', bestClosed, closed.get(cleanAddress(bestClosed)), 'После расчёта появится адрес.');
+    leaders.querySelectorAll('[data-portfolio-pnl-address]').forEach(button => button.onclick = () => openPortfolio(button.dataset.portfolioPnlAddress));
+    bindSave(leaders);
+    document.querySelectorAll('#walletList .wallet-row').forEach(row => {
+      if (/\bxyz:/i.test(row.textContent || '')) { row.remove(); return; }
+      const address = cleanAddress(row.querySelector('[data-address]')?.dataset.address);
+      row.querySelector('.wallet-pnl')?.remove();
+      const lines = [];
+      if (open.has(address)) lines.push('<span>Открытый PnL: <b>' + esc(open.get(address)) + '</b></span>');
+      if (closed.has(address)) lines.push('<span>Закрытый PnL: <b>' + esc(closed.get(address)) + '</b></span>');
+      if (lines.length) { const box = document.createElement('div'); box.className = 'wallet-pnl'; box.innerHTML = lines.join(''); row.querySelector('.wallet-main')?.appendChild(box); }
+    });
+  };
+  const observe = id => { const node = document.getElementById(id); if (node) new MutationObserver(() => requestAnimationFrame(update)).observe(node, {childList:true,subtree:true}); };
+  observe('openPnlList'); observe('closedPnlList'); observe('walletList');
+  update();
+})();
+</script>
+<script>
+/* Final display guard: synthetic xyz instruments are excluded at the source
+   display layer even when the live list is rebuilt. */
+(() => {
+  const removeXyz = () => document.querySelectorAll('#portfolioList .trade-row,#bestTradesList .trade-row,#walletList .wallet-row,#eventsBody tr').forEach(row => {
+    if (/xyz:/i.test(row.textContent || '')) row.remove();
+  });
+  ['portfolioList','bestTradesList','walletList','eventsBody'].forEach(id => {
+    const node = document.getElementById(id);
+    if (node) new MutationObserver(removeXyz).observe(node, {childList:true,subtree:true});
+  });
+  setInterval(removeXyz, 500);
+  removeXyz();
+})();
+</script>
+<style>
+  /* Persistent notification centre replaces short-lived bottom toasts. */
+  #notificationCenter{margin:0 0 14px;background:rgba(12,23,28,.9);border:1px solid var(--line);box-shadow:var(--shadow)}
+  #notificationCenter[hidden]{display:none}
+  #notificationFeed{max-height:150px;overflow:auto}
+  .notification-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:start;padding:10px 14px;border-bottom:1px solid rgba(32,52,58,.65)}
+  .notification-row:last-child{border-bottom:0}.notification-row b{display:block;font-size:12px}.notification-row span{display:block;margin-top:3px;color:var(--muted);font-size:11px}.notification-row.buy b{color:var(--green)}.notification-row.sell b{color:var(--red)}
+  .notification-close{border:0;background:transparent;color:var(--muted);font-size:18px;line-height:1;padding:0 3px}.notification-close:hover{color:var(--text)}
+</style>
+<script>
+/* System notifications are the primary alert.  The visible centre is a
+   durable in-page history, so no notification vanishes after a few seconds. */
+(() => {
+  const target = document.querySelector('main.content');
+  if (!target) return;
+  const center = document.createElement('section');
+  center.id = 'notificationCenter'; center.hidden = true;
+  center.innerHTML = '<div class="panel-head"><div><div class="panel-title">Уведомления</div><div class="panel-sub">Новые события и состояние автоторговли</div></div><button class="btn small" id="clearNotifications">Очистить</button></div><div id="notificationFeed"></div>';
+  target.prepend(center);
+  const feed = center.querySelector('#notificationFeed');
+  let messages = [];
+  const draw = () => { center.hidden = !messages.length; feed.innerHTML = messages.map((item, index) => '<div class="notification-row ' + (item.kind || '') + '"><div><b>' + esc(item.title) + '</b><span>' + esc(item.body) + '</span></div><button class="notification-close" data-notification-close="' + index + '" title="Закрыть">×</button></div>').join(''); feed.querySelectorAll('[data-notification-close]').forEach(button => button.onclick = () => { messages.splice(Number(button.dataset.notificationClose), 1); draw(); }); };
+  center.querySelector('#clearNotifications').onclick = () => { messages = []; draw(); };
+  window.toast = (title, body, kind = '') => { messages.unshift({title, body, kind}); messages = messages.slice(0, 50); draw(); };
+})();
+</script>
+<script>
+/* No in-page notification feed or transient bottom pop-ups. Browser push
+   notifications remain controlled by the existing notification setting. */
+(() => {
+  document.getElementById('notificationCenter')?.remove();
+  document.getElementById('toastStack')?.remove();
+  window.toast = () => {};
+})();
+</script>
+<script>
+/* Leader addresses open the full portfolio; saving is available beside each. */
+(() => {
+  const refresh = () => document.querySelectorAll('#radarLeaders .leader-card').forEach(card => {
+    const addressButton = card.querySelector('[data-leader-address]');
+    if (!addressButton || card.querySelector('[data-radar-leader-save]')) return;
+    const address = String(addressButton.dataset.leaderAddress || '').toLowerCase();
+    addressButton.onclick = () => openPortfolio(address);
+    const save = document.createElement('button');
+    save.className = 'btn small'; save.dataset.radarLeaderSave = address;
+    const saved = state.manualAddresses.includes(address);
+    save.textContent = saved ? 'Сохранён' : 'Сохранить'; save.disabled = saved;
+    save.style.marginLeft = '7px';
+    save.onclick = () => { addWatch(address); save.textContent = 'Сохранён'; save.disabled = true; };
+    addressButton.after(save);
+  });
+  const leaders = document.getElementById('radarLeaders');
+  if (leaders) new MutationObserver(refresh).observe(leaders,{childList:true,subtree:true});
+  refresh();
+})();
+</script>
+<script>
+/* Saved-address analysis is an explicit opt-in for each launch. */
+(() => {
+  const toggle = document.getElementById('analyzeSavedToggle');
+  if (!toggle) return;
+  toggle.checked = state.analyzeSaved !== false;
+  toggle.onchange = () => { state.analyzeSaved = toggle.checked; save(); };
+  const previousStart = window.start;
+  window.start = async (...args) => {
+    state.analyzeSaved = toggle.checked;
+    return previousStart(...args);
+  };
+})();
+</script>
+<script>
+/* In the portfolio block, show the first and second address for each metric. */
+(() => {
+  const addressRows = id => [...document.querySelectorAll('#' + id + ' .trade-row')].map(row => ({
+    address: String(row.querySelector('[data-address]')?.dataset.address || '').toLowerCase(),
+    value: row.querySelector('.trade-usd')?.textContent.trim() || ''
+  })).filter(item => item.address).slice(0, 2);
+  const render = () => {
+    const panel = document.getElementById('portfolioList')?.closest('section.panel');
+    const head = panel?.querySelector('.panel-head'); if (!head) return;
+    let box = document.getElementById('portfolioPnlLeaders');
+    if (!box) { box = document.createElement('div'); box.id = 'portfolioPnlLeaders'; head.after(box); }
+    const volume = Object.values(state.wallets).sort((a,b) => (b.total || 0) - (a.total || 0)).slice(0, 2).map(item => ({address:String(item.address || '').toLowerCase(), value:fmtUsd(item.total || 0)}));
+    const card = (title, rows) => '<div class="portfolio-pnl-card"><strong>' + title + '</strong>' + (rows.length ? rows.map((item,index) => '<div class="leader-line"><span class="leader-rank">' + (index + 1) + '.</span><button class="address-link" data-portfolio-leader="' + esc(item.address) + '">' + esc(item.address) + '</button><span class="pnl-value">' + esc(item.value) + '</span><button class="btn small" data-portfolio-open="' + esc(item.address) + '">Открыть портфель</button><button class="btn small" data-portfolio-save="' + esc(item.address) + '"' + (state.manualAddresses.includes(item.address) ? ' disabled' : '') + '>' + (state.manualAddresses.includes(item.address) ? 'Сохранён' : 'Сохранить') + '</button></div>').join('') : '<span class="muted">После расчёта появятся адреса.</span>') + '</div>';
+    box.innerHTML = card('Максимальный объём', volume) + card('Открытый PnL', addressRows('openPnlList')) + card('Закрытый PnL', addressRows('closedPnlList'));
+    box.querySelectorAll('[data-portfolio-leader],[data-portfolio-open]').forEach(button => button.onclick = () => openPortfolio(button.dataset.portfolioLeader || button.dataset.portfolioOpen));
+    box.querySelectorAll('[data-portfolio-save]').forEach(button => button.onclick = () => { addWatch(button.dataset.portfolioSave); button.textContent='Сохранён'; button.disabled=true; });
+  };
+  ['portfolioList','walletList','openPnlList','closedPnlList'].forEach(id => { const el=document.getElementById(id); if(el)new MutationObserver(() => requestAnimationFrame(render)).observe(el,{childList:true,subtree:true}); });
+  render();
+})();
+</script>
+<script>
+/* Put the closed PnL panel where the system log was, and move the log below. */
+(() => {
+  const grid = document.querySelector('.bottom-grid');
+  const log = document.getElementById('logList')?.closest('section.panel');
+  const closed = document.getElementById('closedPnlList')?.closest('section.panel');
+  if (!grid || !log || !closed) return;
+  grid.insertBefore(closed, log);
+  grid.appendChild(log);
+})();
+</script>
+<script>
+/* Sort market deviation by dollar PnL: the biggest profit always comes first. */
+(() => {
+  const button = document.querySelector('.sort-btn[data-sort="deviation"]');
+  if (!button) return;
+  const sort = () => {
+    const body = document.getElementById('eventsBody');
+    if (!body) return;
+    const amount = row => {
+      const raw = row.cells[10]?.textContent || '';
+      const match = raw.match(/[+−-]?\$\s*([\d.,]+)\s*([KMB])?/i);
+      if (!match) return -Infinity;
+      const value = Number(match[1].replace(/,/g,''));
+      const factor = ({K:1e3,M:1e6,B:1e9})[(match[2] || '').toUpperCase()] || 1;
+      return (/[-−]/.test(match[0]) ? -1 : 1) * value * factor;
+    };
+    [...body.rows].sort((a,b) => amount(b) - amount(a)).forEach(row => body.appendChild(row));
+  };
+  button.addEventListener('click', () => requestAnimationFrame(sort));
+})();
+</script>
+<script>
+/* Show when a position was opened. Fragmented executions show their full
+   start-to-finish interval instead of only the latest fill time. */
+(() => {
+  const table = document.querySelector('#eventsBody')?.closest('table');
+  if (!table) return;
+  const header = table.querySelector('thead tr');
+  const sourceHead = [...header.children].find(cell => cell.querySelector('[data-sort="source"]'));
+  if (sourceHead && !header.querySelector('[data-sort="open-time"]')) {
+    const th = document.createElement('th');
+    th.innerHTML = '<button class="sort-btn" data-sort="open-time">ВРЕМЯ ПОКУПКИ ↓</button>';
+    sourceHead.after(th);
   }
-  function draw(){
-    const closedBy=typeof window.closedPnlByAddress==='function'?window.closedPnlByAddress():{};
-    const addresses=[...new Set([...state.manualAddresses,...Object.keys(closedBy)])];
-    const rows=addresses.map(address=>{const s=snaps[address],c=closedBy[address]||0;return {address,count:s?s.count:null,open:s?s.pnl:0,closed:c,total:(s?s.pnl:0)+c,known:!!s}}).filter(r=>r.known||r.closed).sort((a,b)=>Math.abs(b.total)-Math.abs(a.total));
-    const open=rows.reduce((s,r)=>s+r.open,0), closedSum=rows.reduce((s,r)=>s+r.closed,0), positions=rows.reduce((s,r)=>s+(r.count||0),0);
-    $('pnlCount').textContent=rows.length;
-    $('pnlEmpty').style.display=rows.length?'none':'block';
-    $('pnlKpis').innerHTML='<div class="pnl-kpi"><span>Открытые позиции · '+positions+'</span><b style="color:'+color(open)+'">'+money(open)+'</b></div><div class="pnl-kpi"><span>Закрытые позиции</span><b style="color:'+color(closedSum)+'">'+money(closedSum)+'</b></div><div class="pnl-kpi total"><span>Общий PnL</span><b style="color:'+color(open+closedSum)+'">'+money(open+closedSum)+'</b></div>';
-    $('pnlBody').innerHTML=rows.map(r=>'<tr><td><button class="address-link" data-address="'+esc(r.address)+'" title="Открыть портфель">'+short(r.address)+'</button></td><td class="mono">'+(r.count===null?'':r.count)+'</td><td class="mono" style="color:'+color(r.open)+'">'+(r.known?money(r.open):'')+'</td><td class="mono" style="color:'+color(r.closed)+'">'+(r.closed?money(r.closed):'')+'</td><td class="mono" style="color:'+color(r.total)+'"><b>'+money(r.total)+'</b></td></tr>').join('');
-    $('pnlSub').textContent='адреса из watchlist · открытые позиции по данным Hyperliquid · обновление каждые 60 с'+(updatedAt?' · обновлено '+time(updatedAt)+' МСК':'');
-  }
-  $('pnlRefresh').onclick=()=>refresh();
-  // A newly saved address is picked up within seconds, not at the next 60 s round.
-  draw(); refresh(); setInterval(refresh,POLL); setInterval(()=>{if(state.manualAddresses.some(a=>!snaps[a]&&!(tried[a]>Date.now()-POLL)))refresh(); draw()},5000);
+  const label = stamp => new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'}).format(new Date(stamp));
+  const update = () => [...document.querySelectorAll('#eventsBody tr')].forEach(row => {
+    const cells = row.cells; if (!cells || cells.length < 10) return;
+    const address = cells[4]?.querySelector('[data-address]')?.dataset.address || '';
+    const coin = cells[5]?.textContent.trim() || '';
+    const position = cells[2]?.textContent.trim() || '';
+    const action = cells[3]?.textContent.trim() || '';
+    const aggregate = state.aggregate?.[address + '|' + coin + '|' + position + '|' + action];
+    /* Insert before the existing market-deviation cell; never overwrite it. */
+    const timeCell = cells.length <= 11 ? row.insertCell(10) : cells[10];
+    const matching = state.events.filter(event => String(event.address || '').toLowerCase() === String(address).toLowerCase() && String(event.coin || '') === coin && String(event.position || '') === position && String(event.action || '') === action);
+    const first = Number(aggregate?.first || Math.min(...matching.map(event => Number(event.time || Date.now()))));
+    const last = Number(aggregate?.last || Math.max(...matching.map(event => Number(event.time || 0))) || first);
+    if (!Number.isFinite(first)) { timeCell.textContent = ''; return; }
+    timeCell.className = 'mono muted';
+    timeCell.textContent = Math.abs(last - first) > 60000 ? label(first) + '–' + label(last) : label(first);
+  });
+  new MutationObserver(() => requestAnimationFrame(update)).observe(document.getElementById('eventsBody'),{childList:true,subtree:true});
+  update();
 })();
 </script>
 </body>
