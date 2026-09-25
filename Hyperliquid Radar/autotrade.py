@@ -574,6 +574,68 @@ def close_all_positions(cfg: dict | None = None) -> list[dict]:
     return results
 
 
+def open_positions(cfg: dict | None = None) -> list[dict]:
+    """Return all open Bybit USDT linear positions for the UI."""
+    if cfg is None:
+        cfg = load_config() or {}
+    if not (cfg.get("apiKey") and cfg.get("apiSecret")):
+        return []
+    try:
+        data = bybit("GET", "/v5/position/list", "category=linear&settleCoin=USDT", cfg)
+    except AutoTradeError:
+        return []
+    result: list[dict] = []
+    for p in data.get("list") or []:
+        size = _dec(p.get("size"))
+        if size <= 0 or p.get("side") not in ("Buy", "Sell"):
+            continue
+        result.append({
+            "symbol": str(p.get("symbol") or ""),
+            "side": p["side"],
+            "sideName": "LONG" if p["side"] == "Buy" else "SHORT",
+            "size": str(p.get("size") or "0"),
+            "entryPrice": str(p.get("avgPrice") or p.get("entryPrice") or "0"),
+            "markPrice": str(p.get("markPrice") or "0"),
+            "pnl": str(p.get("unrealisedPnl") or "0"),
+            "leverage": str(p.get("leverage") or "1"),
+            "value": str(p.get("positionValue") or "0"),
+        })
+    return result
+
+
+def close_position(symbol: str, cfg: dict | None = None) -> dict:
+    """Close a single Bybit position by symbol, using limit orders near market price."""
+    if cfg is None:
+        cfg = load_config() or {}
+    if not (cfg.get("apiKey") and cfg.get("apiSecret")):
+        raise AutoTradeError("Bybit API ключи не заданы.")
+    symbol = str(symbol or "").strip().upper()
+    if not symbol:
+        raise AutoTradeError("Не указана пара для закрытия.")
+    positions = bybit("GET", "/v5/position/list",
+                       "category=linear&symbol=" + urllib.parse.quote(symbol), cfg)
+    open_pos = [p for p in positions.get("list") or []
+                if _dec(p.get("size")) > 0 and p.get("side") in ("Buy", "Sell")]
+    if not open_pos:
+        raise AutoTradeError(f"Нет открытой позиции {symbol} на Bybit.")
+    position = open_pos[0]
+    side_name = "LONG" if position["side"] == "Buy" else "SHORT"
+    pnl = position.get("unrealisedPnl") or "—"
+    with _TRADE_LOCK:
+        done = _close(symbol, position, cfg)
+    note = _close_note(done)
+    journal("trade", f"Закрыта {side_name} {symbol} вручную · {note}",
+            symbol=symbol, qty=str(position.get("size")))
+    notify.send(
+        f"⚪ <b>Bybit: закрыта {side_name} {symbol}</b>\n"
+        f"qty {position.get('size')} · PnL {pnl} · {note}\n"
+        f"ручное закрытие с сайта",
+        dedupe_key=f"manual-close:{symbol}:{time.time():.0f}",
+    )
+    return {"ok": True, "symbol": symbol, "side": position["side"],
+            "sideName": side_name, "how": note}
+
+
 def _side_name(side: str) -> str:
     return "LONG" if side == "Buy" else "SHORT"
 

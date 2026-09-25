@@ -199,6 +199,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, autotrade.save_config(data))
             elif path == "/autotrade/signal":
                 self._json(HTTPStatus.OK, autotrade.browser_signal(data))
+            elif path == "/autotrade/close-position":
+                symbol = str((data if isinstance(data, dict) else {}).get("symbol") or "")
+                self._json(HTTPStatus.OK, autotrade.close_position(symbol))
+            elif path == "/autotrade/close-all":
+                results = autotrade.close_all_positions()
+                self._json(HTTPStatus.OK, {"ok": True, "results": results})
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
         except autotrade.AutoTradeError as error:
@@ -337,6 +343,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/autotrade/log":
             if self._require_auth():
                 self._json(HTTPStatus.OK, {"ok": True, "events": autotrade.recent_events(200)})
+            return
+        if path == "/autotrade/positions":
+            if self._require_auth():
+                self._json(HTTPStatus.OK, {"ok": True, "positions": autotrade.open_positions()})
             return
         if not self._require_auth(html_request=True):
             return
