@@ -722,13 +722,16 @@ def _signal_locked(data: dict) -> dict:
     if max_qty > 0 and qty > max_qty:
         qty = (max_qty / step).to_integral_value(rounding=ROUND_FLOOR) * step
     if qty <= 0:
-        raise AutoTradeError(f"Доступного баланса ${_fmt(available)} не хватает на минимальный ордер {symbol}.")
+        msg = f"Доступного баланса ${_fmt(available)} не хватает на ордер {symbol}"
+        journal("trade", msg, symbol=symbol)
+        return {"ok": True, "skipped": msg, "symbol": symbol}
     min_qty = _dec(lot.get("minOrderQty"), "0")
     min_notional = _dec(lot.get("minNotionalValue"), "0")
     if qty < min_qty or (min_notional > 0 and qty * price < min_notional):
-        raise AutoTradeError(
-            f"Объём {_fmt(qty)} {symbol} (~${_fmt((qty * price).quantize(Decimal('0.01')))}) меньше минимума Bybit "
-            f"({_fmt(min_qty)} / ${_fmt(min_notional)}). Увеличьте процент депозита или плечо.")
+        msg = (f"Объём {_fmt(qty)} {symbol} (~${_fmt((qty * price).quantize(Decimal('0.01')))}) "
+               f"меньше минимума Bybit. Увеличьте % депозита.")
+        journal("trade", msg, symbol=symbol)
+        return {"ok": True, "skipped": msg, "symbol": symbol}
     idx = 1 if side == "Buy" else 2
     how = "рыночный"
     order_id = None
