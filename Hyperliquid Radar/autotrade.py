@@ -211,6 +211,8 @@ def save_config(data: dict) -> dict:
         detail = f"{', '.join(notify.short(a) for a in addresses)} · {equity:g}% депозита · {leverage}x · {kind}"
         journal("config", ("Включена: " if enabled else "Выключена: ") + detail)
         notify.send(f"{text}\n{detail}", dedupe_key=f"toggle:{enabled}:{cfg['updatedAt']}")
+        if was and not enabled:
+            threading.Thread(target=close_all_positions, args=(cfg,), daemon=True, name="close-on-stop").start()
     else:
         journal("config", f"Настройки сохранены: {len(addresses)} адрес(а) · {equity:g}% · {leverage}x · {order_type}")
     return status()
@@ -520,6 +522,56 @@ def _close_note(done: dict) -> str:
     if done.get("avg"):
         parts.append(f"ср. цена {_fmt(done['avg'])}")
     return " · ".join(parts)
+
+
+def close_all_positions(cfg: dict | None = None) -> list[dict]:
+    """Close every open Bybit linear position at the current limit price.
+
+    Called automatically when the operator turns auto-trading off so that
+    no positions are left dangling.  Each position is closed with the same
+    limit-then-market logic used for leader-close signals.
+    """
+    if cfg is None:
+        cfg = load_config() or {}
+    if not (cfg.get("apiKey") and cfg.get("apiSecret")):
+        return []
+    try:
+        data = bybit("GET", "/v5/position/list", "category=linear&settleCoin=USDT", cfg)
+    except AutoTradeError as error:
+        journal("error", f"Не удалось получить позиции при закрытии: {error}")
+        notify.send(f"⚠️ <b>Не удалось закрыть позиции</b>\n{error}", dedupe_key=f"close-all-err:{error}")
+        return []
+    results: list[dict] = []
+    for position in data.get("list") or []:
+        size = _dec(position.get("size"))
+        if size <= 0 or position.get("side") not in ("Buy", "Sell"):
+            continue
+        symbol = str(position.get("symbol") or "")
+        side_name = _side_name(position["side"])
+        pnl = position.get("unrealisedPnl") or "—"
+        try:
+            with _TRADE_LOCK:
+                done = _close(symbol, position, cfg)
+            note = _close_note(done)
+            journal("trade", f"Закрыта {side_name} {symbol} при выключении · {note}",
+                    symbol=symbol, qty=str(size))
+            notify.send(
+                f"⚪ <b>Bybit: закрыта {side_name} {symbol}</b>\n"
+                f"qty {_fmt(size)} · PnL {pnl} · {note}\n"
+                f"автоторговля выключена",
+                dedupe_key=f"close-on-stop:{symbol}:{time.time():.0f}",
+            )
+            results.append({"symbol": symbol, "side": position["side"], "ok": True, "how": note})
+        except AutoTradeError as error:
+            journal("error", f"Не удалось закрыть {side_name} {symbol}: {error}", symbol=symbol)
+            notify.send(
+                f"⚠️ <b>Не удалось закрыть {side_name} {symbol}</b>\n{error}",
+                dedupe_key=f"close-on-stop-err:{symbol}:{time.time():.0f}",
+            )
+            results.append({"symbol": symbol, "side": position["side"], "ok": False, "error": str(error)})
+    if not results:
+        journal("config", "Автоторговля выключена: открытых позиций нет")
+    return results
 
 
 def _side_name(side: str) -> str:
