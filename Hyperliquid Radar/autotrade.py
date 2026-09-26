@@ -681,16 +681,18 @@ def _signal_locked(data: dict) -> dict:
                 "symbol": symbol, "closed": current.get("side"), "qty": str(current.get("size")),
                 "pnl": str(current.get("unrealisedPnl") or ""), "how": _close_note(done)}
 
-    if current is not None and current.get("side") == side:
-        return {"ok": True, "skipped": "Такая позиция уже открыта", "symbol": symbol}
     reversed_from = None
+    is_dca = False
     if current is not None:
-        pnl = _dec(current.get("unrealisedPnl"))
-        if pnl < MIN_OPPOSITE_PNL:
-            return {"ok": True, "skipped": f"Противоположный сигнал пропущен: PnL {_fmt(pnl)} меньше $10",
-                    "symbol": symbol}
-        reversed_note = _close_note(_close(symbol, current, cfg))
-        reversed_from = current
+        if current.get("side") == side:
+            is_dca = True
+        else:
+            pnl = _dec(current.get("unrealisedPnl"))
+            if pnl < MIN_OPPOSITE_PNL:
+                return {"ok": True, "skipped": f"Противоположный сигнал пропущен: PnL {_fmt(pnl)} меньше $10",
+                        "symbol": symbol}
+            reversed_note = _close_note(_close(symbol, current, cfg))
+            reversed_from = current
 
     try:
         bybit("POST", "/v5/position/set-leverage",
@@ -763,7 +765,7 @@ def _signal_locked(data: dict) -> dict:
         order_id = _order(order, cfg).get("orderId")
         filled = qty
     _RECENT_ACTION[symbol] = (side, time.monotonic())
-    text = f"Открыта {_side_name(side)} {symbol}"
+    text = f"Усреднена (докуплена) {_side_name(side)} {symbol}" if is_dca else f"Открыта {_side_name(side)} {symbol}"
     if reversed_from is not None:
         text = (f"Закрыта {_side_name(reversed_from['side'])} (PnL {reversed_from.get('unrealisedPnl')}) "
                 f"и открыта {_side_name(side)} {symbol}")
