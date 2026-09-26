@@ -74,6 +74,17 @@ LIMIT_POLL_SECONDS = float(os.environ.get("AUTOTRADE_POLL_SECONDS", "1"))
 # started; an exit is always completed.
 LIMIT_MAX_DRIFT_PCT = Decimal(os.environ.get("AUTOTRADE_MAX_DRIFT_PCT", "0.5"))
 TERMINAL = {"Filled", "Cancelled", "Rejected", "PartiallyFilledCanceled", "Deactivated"}
+# Exits: after the maker window, IOC limit orders at the current best price
+# are repeated this many times (each takes only the top of the book) before
+# anything left goes at market.
+CLOSE_IOC_ROUNDS = int(os.environ.get("AUTOTRADE_CLOSE_IOC_ROUNDS", "6"))
+# "Close everything" (switch-off and the button): positions are closed in
+# parallel, with a shorter maker window, so 40 positions take seconds, not minutes.
+CLOSE_ALL_MAKER_SECONDS = float(os.environ.get("AUTOTRADE_CLOSE_ALL_SECONDS", "5"))
+CLOSE_ALL_WORKERS = int(os.environ.get("AUTOTRADE_CLOSE_ALL_WORKERS", "8"))
+# Private Bybit calls per second, shared by every thread (Bybit answers 10006 above its limit).
+BYBIT_RATE = float(os.environ.get("BYBIT_PRIVATE_PER_SECOND", "15"))
+POSITION_ZERO = 110017  # "current position is zero, cannot fix reduce-only order qty"
 MSK = timezone(timedelta(hours=3))
 
 _CONFIG_LOCK = threading.Lock()
@@ -136,7 +147,7 @@ def _key_mask(cfg: dict) -> str:
 def status() -> dict:
     cfg = load_config()
     out: dict = {"server": True, "events": recent_events(12), "telegram": notify.status(),
-                 "listener": dict(LISTENER)}
+                 "listener": dict(LISTENER), "closing": dict(CLOSE_STATE)}
     if cfg is None:
         out.update(configured=False, enabled=False, addresses=[])
         return out
@@ -212,7 +223,7 @@ def save_config(data: dict) -> dict:
         journal("config", ("Включена: " if enabled else "Выключена: ") + detail)
         notify.send(f"{text}\n{detail}", dedupe_key=f"toggle:{enabled}:{cfg['updatedAt']}")
         if was and not enabled:
-            threading.Thread(target=close_all_positions, args=(cfg,), daemon=True, name="close-on-stop").start()
+            start_close_all("автоторговля выключена", cfg)
     else:
         journal("config", f"Настройки сохранены: {len(addresses)} адрес(а) · {equity:g}% · {leverage}x · {order_type}")
     return status()
@@ -280,8 +291,34 @@ def _http_json(url: str, data: bytes | None = None, headers: dict | None = None,
         raise AutoTradeError(f"Нет ответа от {urllib.parse.urlsplit(url).netloc}: {error}") from None
 
 
+_RATE_LOCK = threading.Lock()
+_RATE_NEXT = [0.0]
+
+
+def _pace() -> None:
+    with _RATE_LOCK:
+        now = time.monotonic()
+        wait = _RATE_NEXT[0] - now
+        _RATE_NEXT[0] = max(now, _RATE_NEXT[0]) + 1.0 / BYBIT_RATE
+    if wait > 0:
+        time.sleep(wait)
+
+
 def bybit(method: str, path: str, body: object, cfg: dict) -> dict:
+    """Signed Bybit v5 call (paced, retried on Bybit's rate limit)."""
+    for attempt in range(3):
+        try:
+            return _bybit_once(method, path, body, cfg)
+        except BybitError as error:
+            if error.code != 10006 or attempt == 2:
+                raise
+            time.sleep(1.0 + attempt)
+    raise AutoTradeError("Bybit: превышен лимит запросов")
+
+
+def _bybit_once(method: str, path: str, body: object, cfg: dict) -> dict:
     """Signed Bybit v5 call, signed exactly like autotrade.ps1."""
+    _pace()
     key, secret = str(cfg.get("apiKey") or ""), str(cfg.get("apiSecret") or "")
     if not key or not secret:
         raise AutoTradeError("Bybit API ключи не заданы.")
@@ -462,7 +499,13 @@ def execute_limit(symbol: str, side: str, qty: Decimal, cfg: dict, position_idx:
             continue
         if resting is None:
             link = _link()
-            _order(dict(base, qty=_fmt(remaining), price=_fmt(best), timeInForce="PostOnly", orderLinkId=link), cfg)
+            try:
+                _order(dict(base, qty=_fmt(remaining), price=_fmt(best), timeInForce="PostOnly", orderLinkId=link), cfg)
+            except BybitError as error:
+                if reduce_only and error.code == POSITION_ZERO:
+                    remaining = Decimal(0)  # already closed (by us or elsewhere)
+                    break
+                raise
             resting = (link, best)
         time.sleep(LIMIT_POLL_SECONDS)
         state = _query(symbol, resting[0], cfg)
@@ -481,9 +524,14 @@ def execute_limit(symbol: str, side: str, qty: Decimal, cfg: dict, position_idx:
             drifted = _drift(side, reference, price)
         else:
             link = _link()
-            _order(dict(base, qty=_fmt(remaining), price=_fmt(price), timeInForce="IOC", orderLinkId=link), cfg)
-            fills.add(_settle(symbol, link, cfg, cancel=False), maker=False)
-            remaining = qty - fills.qty
+            try:
+                _order(dict(base, qty=_fmt(remaining), price=_fmt(price), timeInForce="IOC", orderLinkId=link), cfg)
+                fills.add(_settle(symbol, link, cfg, cancel=False), maker=False)
+                remaining = qty - fills.qty
+            except BybitError as error:
+                if not (reduce_only and error.code == POSITION_ZERO):
+                    raise
+                remaining = Decimal(0)
     return {"filled": fills.qty, "avg": fills.avg, "maker": fills.maker, "taker": fills.taker,
             "remaining": remaining, "drift": drifted, "reference": reference}
 
@@ -496,27 +544,68 @@ def _leg_size(symbol: str, side: str, cfg: dict) -> Decimal:
     return Decimal(0)
 
 
-def _close(symbol: str, position: dict, cfg: dict) -> dict:
+def _reduce(body: dict, cfg: dict) -> bool:
+    """Place a reduce-only order; False when the position is already zero."""
+    try:
+        _order(body, cfg)
+        return True
+    except BybitError as error:
+        if error.code == POSITION_ZERO:
+            return False
+        raise
+
+
+def _close(symbol: str, position: dict, cfg: dict, force_limit: bool = False,
+           maker_seconds: float | None = None) -> dict:
+    """Close one position completely: limit at the current price first, market only for a remainder."""
     close_side = "Sell" if position.get("side") == "Buy" else "Buy"
-    idx = 1 if position.get("side") == "Buy" else 2
+    idx = int(position.get("positionIdx") or 0) or (1 if position.get("side") == "Buy" else 2)
     size = _dec(position.get("size"))
     market = {"category": "linear", "symbol": symbol, "side": close_side, "orderType": "Market",
               "reduceOnly": True, "positionIdx": idx}
-    if _order_type(cfg) == "Market":
-        _order(dict(market, qty=str(position.get("size"))), cfg)
-        return {"qty": size, "market": size, "avg": Decimal(0), "maker": Decimal(0)}
-    done = execute_limit(symbol, close_side, size, cfg, idx, True, LIMIT_CLOSE_SECONDS, None)
-    # An exit must complete: whatever the book did not take goes at market.
+    if _order_type(cfg) == "Market" and not force_limit:
+        _reduce(dict(market, qty=str(position.get("size"))), cfg)
+        return {"qty": size, "market": size, "avg": Decimal(0), "maker": Decimal(0), "taker": Decimal(0)}
+    done = execute_limit(symbol, close_side, size, cfg, idx, True,
+                         LIMIT_CLOSE_SECONDS if maker_seconds is None else maker_seconds, None)
+    taker = done["taker"]
+    cost = done["avg"] * done["filled"]
+    filled = done["filled"]
+    # Keep taking the top of the book at the current price until it is gone.
     left = _leg_size(symbol, position.get("side"), cfg)
-    if left > 0:
-        _order(dict(market, qty=_fmt(left)), cfg)
-    return {"qty": size, "market": left, "avg": done["avg"], "maker": done["maker"]}
+    for _ in range(CLOSE_IOC_ROUNDS):
+        if left <= 0:
+            break
+        bid, ask = _book(symbol)
+        price = bid if close_side == "Sell" else ask
+        link = _link()
+        if not _reduce({"category": "linear", "symbol": symbol, "side": close_side, "orderType": "Limit",
+                        "qty": _fmt(left), "price": _fmt(price), "timeInForce": "IOC", "reduceOnly": True,
+                        "positionIdx": idx, "orderLinkId": link}, cfg):
+            left = Decimal(0)
+            break
+        state = _settle(symbol, link, cfg, cancel=False)
+        got = _dec(state.get("cumExecQty"))
+        taker += got
+        filled += got
+        cost += got * _dec(state.get("avgPrice") or price)
+        left = _leg_size(symbol, position.get("side"), cfg)
+        if got <= 0:
+            time.sleep(0.3)
+    # An exit must complete: whatever the book did not take goes at market.
+    market_qty = Decimal(0)
+    if left > 0 and _reduce(dict(market, qty=_fmt(left)), cfg):
+        market_qty = left
+    return {"qty": size, "market": market_qty, "avg": cost / filled if filled else Decimal(0),
+            "maker": done["maker"], "taker": taker}
 
 
 def _close_note(done: dict) -> str:
     parts = []
     if done.get("maker"):
         parts.append(f"лимит {_fmt(done['maker'])}")
+    if done.get("taker"):
+        parts.append(f"по текущей цене {_fmt(done['taker'])}")
     if done.get("market"):
         parts.append(f"по рынку {_fmt(done['market'])}")
     if done.get("avg"):
@@ -524,54 +613,119 @@ def _close_note(done: dict) -> str:
     return " · ".join(parts)
 
 
-def close_all_positions(cfg: dict | None = None) -> list[dict]:
-    """Close every open Bybit linear position at the current limit price.
+def _all_positions(cfg: dict) -> list[dict]:
+    """Every open USDT perpetual position (the list is paged, 200 per page)."""
+    out: list[dict] = []
+    cursor = ""
+    for _ in range(20):
+        query = "category=linear&settleCoin=USDT&limit=200" + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else "")
+        data = bybit("GET", "/v5/position/list", query, cfg)
+        out += [p for p in data.get("list") or [] if _dec(p.get("size")) > 0 and p.get("side") in ("Buy", "Sell")]
+        cursor = str(data.get("nextPageCursor") or "")
+        if not cursor:
+            break
+    return out
 
-    Called automatically when the operator turns auto-trading off so that
-    no positions are left dangling.  Each position is closed with the same
-    limit-then-market logic used for leader-close signals.
+
+CLOSE_STATE: dict = {"active": False, "total": 0, "done": 0, "failed": 0, "startedAt": 0, "finishedAt": 0, "reason": ""}
+_CLOSE_ALL_LOCK = threading.Lock()
+
+
+def start_close_all(reason: str, cfg: dict | None = None) -> dict:
+    """Run close_all_positions in the background; one run at a time."""
+    if CLOSE_STATE.get("active"):
+        return {"ok": True, "running": True, "closing": dict(CLOSE_STATE)}
+    CLOSE_STATE.update(active=True, total=0, done=0, failed=0, startedAt=int(time.time() * 1000), finishedAt=0, reason=reason)
+    threading.Thread(target=close_all_positions, args=(cfg, reason), daemon=True, name="close-all").start()
+    return {"ok": True, "started": True, "closing": dict(CLOSE_STATE)}
+
+
+def close_all_positions(cfg: dict | None = None, reason: str = "закрыть все") -> list[dict]:
+    """Cancel every open order and close every open position at the current price.
+
+    Used when the operator switches auto-trading off and by «Закрыть все».
+    Positions are closed in parallel: post-only at the best price for a few
+    seconds, then IOC limit orders at the current best price, and only what
+    the book could not take goes at market.
     """
-    if cfg is None:
-        cfg = load_config() or {}
-    if not (cfg.get("apiKey") and cfg.get("apiSecret")):
+    if not _CLOSE_ALL_LOCK.acquire(blocking=False):
         return []
-    try:
-        data = bybit("GET", "/v5/position/list", "category=linear&settleCoin=USDT", cfg)
-    except AutoTradeError as error:
-        journal("error", f"Не удалось получить позиции при закрытии: {error}")
-        notify.send(f"⚠️ <b>Не удалось закрыть позиции</b>\n{error}", dedupe_key=f"close-all-err:{error}")
-        return []
+    CLOSE_STATE.update(active=True, total=0, done=0, failed=0, startedAt=int(time.time() * 1000), finishedAt=0, reason=reason)
     results: list[dict] = []
-    for position in data.get("list") or []:
-        size = _dec(position.get("size"))
-        if size <= 0 or position.get("side") not in ("Buy", "Sell"):
-            continue
-        symbol = str(position.get("symbol") or "")
-        side_name = _side_name(position["side"])
-        pnl = position.get("unrealisedPnl") or "—"
+    try:
+        if cfg is None:
+            cfg = load_config() or {}
+        if not (cfg.get("apiKey") and cfg.get("apiSecret")):
+            return []
         try:
-            with _TRADE_LOCK:
-                done = _close(symbol, position, cfg)
-            note = _close_note(done)
-            journal("trade", f"Закрыта {side_name} {symbol} при выключении · {note}",
-                    symbol=symbol, qty=str(size))
-            notify.send(
-                f"⚪ <b>Bybit: закрыта {side_name} {symbol}</b>\n"
-                f"qty {_fmt(size)} · PnL {pnl} · {note}\n"
-                f"автоторговля выключена",
-                dedupe_key=f"close-on-stop:{symbol}:{time.time():.0f}",
-            )
-            results.append({"symbol": symbol, "side": position["side"], "ok": True, "how": note})
+            bybit("POST", "/v5/order/cancel-all", {"category": "linear", "settleCoin": "USDT"}, cfg)
         except AutoTradeError as error:
-            journal("error", f"Не удалось закрыть {side_name} {symbol}: {error}", symbol=symbol)
-            notify.send(
-                f"⚠️ <b>Не удалось закрыть {side_name} {symbol}</b>\n{error}",
-                dedupe_key=f"close-on-stop-err:{symbol}:{time.time():.0f}",
-            )
-            results.append({"symbol": symbol, "side": position["side"], "ok": False, "error": str(error)})
-    if not results:
-        journal("config", "Автоторговля выключена: открытых позиций нет")
-    return results
+            journal("error", f"Не удалось снять открытые ордера: {error}")
+        try:
+            positions = _all_positions(cfg)
+        except AutoTradeError as error:
+            journal("error", f"Не удалось получить позиции при закрытии: {error}")
+            notify.send(f"⚠️ <b>Не удалось закрыть позиции</b>\n{error}", dedupe_key=f"close-all-err:{error}")
+            return []
+        CLOSE_STATE["total"] = len(positions)
+        if not positions:
+            journal("config", f"Закрыть все ({reason}): открытых позиций нет")
+            return []
+        journal("config", f"Закрываю все позиции ({reason}): {len(positions)}")
+        notify.send(f"⏳ <b>Закрываю все позиции Bybit: {len(positions)}</b>\n{reason} · лимит по текущей цене",
+                    dedupe_key=f"close-all-start:{time.time():.0f}")
+
+        def one(position: dict) -> dict:
+            symbol = str(position.get("symbol") or "")
+            side_name = _side_name(position["side"])
+            try:
+                done = _close(symbol, position, cfg, force_limit=True, maker_seconds=CLOSE_ALL_MAKER_SECONDS)
+                note = _close_note(done)
+                journal("trade", f"Закрыта {side_name} {symbol} ({reason}) · {note}", symbol=symbol,
+                        qty=str(position.get("size")))
+                CLOSE_STATE["done"] += 1
+                return {"symbol": symbol, "side": position["side"], "ok": True, "how": note, "done": done,
+                        "pnl": _dec(position.get("unrealisedPnl"))}
+            except Exception as error:  # noqa: BLE001 - one bad symbol must not stop the rest
+                journal("error", f"Не удалось закрыть {side_name} {symbol}: {error}", symbol=symbol)
+                CLOSE_STATE["failed"] += 1
+                return {"symbol": symbol, "side": position["side"], "ok": False, "error": str(error)}
+
+        with _TRADE_LOCK:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=max(1, CLOSE_ALL_WORKERS)) as pool:
+                results = list(pool.map(one, positions))
+            # Anything still open (a failed symbol, a fill that raced us): at market.
+            try:
+                for left in _all_positions(cfg):
+                    try:
+                        _reduce({"category": "linear", "symbol": left["symbol"], "orderType": "Market",
+                                 "side": "Sell" if left["side"] == "Buy" else "Buy", "qty": str(left["size"]),
+                                 "reduceOnly": True, "positionIdx": int(left.get("positionIdx") or 0)}, cfg)
+                        journal("trade", f"Дозакрыта по рынку {_side_name(left['side'])} {left['symbol']}", symbol=left["symbol"])
+                    except AutoTradeError as error:
+                        journal("error", f"Не удалось дозакрыть {left['symbol']}: {error}", symbol=left["symbol"])
+                remaining = len(_all_positions(cfg))
+            except AutoTradeError as error:
+                remaining = -1
+                journal("error", f"Проверка после закрытия: {error}")
+        ok = [r for r in results if r["ok"]]
+        maker = sum(1 for r in ok if r["done"].get("maker"))
+        taker = sum(1 for r in ok if r["done"].get("taker"))
+        market = sum(1 for r in ok if r["done"].get("market"))
+        pnl = sum((r["pnl"] for r in ok), Decimal(0))
+        summary = (f"Закрыто {len(ok)} из {len(results)} · лимит: {maker} · по текущей цене: {taker} · по рынку: {market}"
+                   f" · PnL ≈ {_fmt(pnl.quantize(Decimal('0.01')))}")
+        if remaining > 0:
+            summary += f" · ⚠️ осталось открытых: {remaining}"
+        journal("config", f"Закрыть все ({reason}): {summary}")
+        notify.send(f"⚪ <b>Все позиции Bybit закрыты</b>\n{summary}\n{reason}" if remaining == 0 else
+                    f"⚠️ <b>Закрытие позиций Bybit</b>\n{summary}\n{reason}",
+                    dedupe_key=f"close-all-done:{time.time():.0f}")
+        return [{k: v for k, v in r.items() if k not in ("done", "pnl")} for r in results]
+    finally:
+        CLOSE_STATE.update(active=False, finishedAt=int(time.time() * 1000))
+        _CLOSE_ALL_LOCK.release()
 
 
 def open_positions(cfg: dict | None = None) -> list[dict]:
@@ -581,11 +735,11 @@ def open_positions(cfg: dict | None = None) -> list[dict]:
     if not (cfg.get("apiKey") and cfg.get("apiSecret")):
         return []
     try:
-        data = bybit("GET", "/v5/position/list", "category=linear&settleCoin=USDT", cfg)
+        listed = _all_positions(cfg)
     except AutoTradeError:
         return []
     result: list[dict] = []
-    for p in data.get("list") or []:
+    for p in listed:
         size = _dec(p.get("size"))
         if size <= 0 or p.get("side") not in ("Buy", "Sell"):
             continue
@@ -685,6 +839,10 @@ def _signal_locked(data: dict) -> dict:
     is_dca = False
     if current is not None:
         if current.get("side") == side:
+            # Add only when the leader added: a partial close by the leader
+            # leaves him on the same side, and must not make us buy more.
+            if f"open-{side}" not in (data.get("kinds") or ()):
+                return {"ok": True, "skipped": "Такая позиция уже открыта (лидер не докупал)", "symbol": symbol}
             is_dca = True
         else:
             pnl = _dec(current.get("unrealisedPnl"))
@@ -725,14 +883,12 @@ def _signal_locked(data: dict) -> dict:
         qty = (max_qty / step).to_integral_value(rounding=ROUND_FLOOR) * step
     if qty <= 0:
         msg = f"Доступного баланса ${_fmt(available)} не хватает на ордер {symbol}"
-        journal("trade", msg, symbol=symbol)
         return {"ok": True, "skipped": msg, "symbol": symbol}
     min_qty = _dec(lot.get("minOrderQty"), "0")
     min_notional = _dec(lot.get("minNotionalValue"), "0")
     if qty < min_qty or (min_notional > 0 and qty * price < min_notional):
         msg = (f"Объём {_fmt(qty)} {symbol} (~${_fmt((qty * price).quantize(Decimal('0.01')))}) "
                f"меньше минимума Bybit. Увеличьте % депозита.")
-        journal("trade", msg, symbol=symbol)
         return {"ok": True, "skipped": msg, "symbol": symbol}
     idx = 1 if side == "Buy" else 2
     how = "рыночный"
@@ -856,11 +1012,11 @@ def desired_side(trigger: str, coin: str, fill_time: int, addresses: list[str]) 
     return active[0]["side"] if active else ""
 
 
-def _evaluate(address: str, coin: str, fill_time: int) -> None:
+def _evaluate(address: str, coin: str, fill_time: int, kinds: frozenset = frozenset()) -> None:
     cfg = load_config()
     if not cfg or not cfg.get("enabled") or address not in (cfg.get("addresses") or []):
         return
-    data = {"address": address, "coin": coin}
+    data = {"address": address, "coin": coin, "kinds": kinds}
     try:
         data["side"] = desired_side(address, coin, fill_time, list(cfg.get("addresses") or []))
         out = signal(data)
@@ -873,21 +1029,33 @@ def _evaluate(address: str, coin: str, fill_time: int) -> None:
 
 def _worker() -> None:
     while True:
-        address, coin, fill_time = _EVALS.get()
-        _evaluate(address, coin, fill_time)
+        address, coin, fill_time, kinds = _EVALS.get()
+        _evaluate(address, coin, fill_time, kinds)
 
 
-def _schedule(address: str, coin: str, fill_time: int) -> None:
+_KINDS: dict[tuple[str, str], set] = {}
+
+
+def _fire(key: tuple[str, str], fill_time: int) -> None:
+    with _STATE_LOCK:
+        kinds = frozenset(_KINDS.pop(key, set()))
+    _EVALS.put((key[0], key[1], fill_time, kinds))
+
+
+def _schedule(address: str, coin: str, fill_time: int, kind: str = "") -> None:
+    """Debounce a leader's fills per coin; remember what kinds of fills they were."""
     global _WORKER
     if _WORKER is None or not _WORKER.is_alive():
         _WORKER = threading.Thread(target=_worker, daemon=True, name="autotrade")
         _WORKER.start()
     key = (address, coin)
     with _STATE_LOCK:
+        if kind:
+            _KINDS.setdefault(key, set()).add(kind)
         old = _TIMERS.pop(key, None)
         if old:
             old.cancel()
-        timer = threading.Timer(DEBOUNCE_SECONDS, _EVALS.put, args=((address, coin, fill_time),))
+        timer = threading.Timer(DEBOUNCE_SECONDS, _fire, args=(key, fill_time))
         timer.daemon = True
         _TIMERS[key] = timer
     timer.start()
@@ -1015,7 +1183,10 @@ def handle_fills(items: list) -> dict:
         coin = str(fill.get("coin") or "")
         spot = coin.startswith("@") or "/" in coin
         if trading and is_leader and fresh and not spot and _dir_kind(str(fill.get("dir") or "")):
-            _schedule(user, coin, fill_time)
+            direction = str(fill.get("dir") or "").strip().lower()
+            kind = ("open-Buy" if direction == "open long" else "open-Sell" if direction == "open short"
+                    else "close" if direction.startswith("close") else "flip")
+            _schedule(user, coin, fill_time, kind)
             scheduled += 1
     return {"ok": True, "scheduled": scheduled, "notified": notified}
 

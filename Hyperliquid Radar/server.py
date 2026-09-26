@@ -203,8 +203,8 @@ class Handler(BaseHTTPRequestHandler):
                 symbol = str((data if isinstance(data, dict) else {}).get("symbol") or "")
                 self._json(HTTPStatus.OK, autotrade.close_position(symbol))
             elif path == "/autotrade/close-all":
-                results = autotrade.close_all_positions()
-                self._json(HTTPStatus.OK, {"ok": True, "results": results})
+                # Runs in the background; progress is in /autotrade/status → closing.
+                self._json(HTTPStatus.OK, autotrade.start_close_all("кнопка «Закрыть все»"))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
         except autotrade.AutoTradeError as error:
